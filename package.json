@@ -1,0 +1,25 @@
+{
+  "name": "ulw-interview",
+  "version": "0.1.0",
+  "description": "Socratic deep interview skill with deterministic ambiguity scoring runtime for opencode",
+  "type": "module",
+  "main": ".opencode/plugins/ulw-interview.js",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "opencode-skill",
+    "skill",
+    "interview",
+    "socratic",
+    "requirements"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DevNewbie1826/ulw-interview.git"
+  },
+  "homepage": "https://github.com/DevNewbie1826/ulw-interview#readme",
+  "bugs": {
+    "url": "https://github.com/DevNewbie1826/ulw-interview/issues"
+  }
+}

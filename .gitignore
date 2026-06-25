@@ -1,0 +1,16 @@
+# opencode working state
+.omo/
+.codegraph/
+
+# dependencies
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# editor
+*.swp
+*.swo
+.idea/
+.vscode/
