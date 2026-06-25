@@ -52,7 +52,7 @@ Internal state, runtime calls, scorer fields, and trigger names are **never show
 | Internal concept | Say this to the user |
 |---|---|
 | "Ambiguity: 45%" | "지금 아이디어의 약 55%는 명확해요. 45%는 아직 헷갈려요." (or in user's language) |
-| "Round 0 Topology confirmation" | "제가 이해한 큰 그림을 확인해주세�¤" |
+| "Round 0 Topology confirmation" | "제가 이해한 큰 그림을 확인해주세요" (EN: "Let me check if I got the big picture right") |
 | "Round 0.5 Initial scoring" | "일단 지금까지 들은 걸로 정리해봤어요" |
 | "Component X / dimension Y targeting" | "'X' 부분에서 'Y'가 아직 불명확해요" |
 | "Trigger A/B/C/D fired" | (don't mention — just ask the follow-up question) |
@@ -98,8 +98,10 @@ Complete this before anything else — before initialization, before the first q
 4. Emit the required first line to the user before any other announcement:
 
 ```
-ULW Interview threshold: 95% (source: .omo/settings.json | default)
+ULW Interview: {percent}% clarity target. (source: {source})
 ```
+
+> **Plain-language version (ALSO show this to the user):** "이 인터뷰는 아이디어가 {percent}% 명확해질 때까지 계속돼요." (EN: "We'll keep going until your idea is {percent}% clear.") The technical line above is for the transcript; the plain-language version is what the user actually reads.
 
 5. Carry the threshold forward mechanically through every step. Do not hardcode. Pass it as the `threshold` field of every `scorer.mjs` invocation.
 
@@ -142,12 +144,16 @@ Run this gate exactly once after Phase 1 initialization and before any Phase 2 a
 
 Chat text (written before the tool call):
 ```
-Round 0 | Topology confirmation | Ambiguity: not scored yet
+제가 이해한 큰 그림이에요:
 
-I'm reading this as {N} top-level component(s):
-1. {component_name}: {one_sentence_description}
+{N}개의 주요 부분으로 나뉘는 것 같아요:
+1. {component_name}: {one_sentence_plain_description}
 2. ...
+
+이해가 맞나요?
 ```
+
+> **EN canonical:** "Here's the big picture as I understand it: {N} main part(s): 1. {name}: {desc}. Does this look right?" Always write in the user's language; use the EN canonical as the source of truth for content.
 
 Then call the `question` tool:
 ```json
@@ -226,19 +232,22 @@ Write the round context as chat text, then ask the actual question via the `ques
 
 **Chat text** (written before the tool call):
 ```
-지금 아이디어의 {100 - score}%는 명확해요. ({score}%는 아직 헷갈려요)
+지금 아이디어의 {round((1 - score) * 100)}%는 명확해요. ({round(score * 100)}%는 아직 헷갈려요)
 
 '{target_component_name}' 부분에서 '{target_dimension}'이(가) 아직 불명확해요.
-{one-sentence plain-language explanation of why this matters, e.g. '이 질문에 답해주시면 어떤 환경에서 작동해야 하는지 알 수 있어요.'}
+{one-sentence plain-language explanation of why this matters}
 ```
+
+> **EN canonical:** "About {round((1 - score) * 100)}% of your idea is clear now. ({round(score * 100)}% is still fuzzy.) The '{component}' part needs clarity on '{dimension}'. {why it matters}"
+
+> **Percent convention:** `score` and `globalAmbiguity` are decimals 0.0–1.0. Display `clarityPercent = round((1 - score) * 100)` and `unclearPercent = round(score * 100)`. Never do `{100 - score}` — that gives 99.55 for score=0.45.
 
 Then call the `question` tool:
 ```json
 {
   "questions": [{
-    "header": "질문 {n}",
+    "header": "Question {n}",
     "question": "{short, specific question in plain language — one sentence}",
-    "question": "{short, specific question text — one sentence}",
     "options": [
       { "label": "{option A}", "description": "{one-line hint}" },
       { "label": "{option B}", "description": "{one-line hint}" },
@@ -249,8 +258,8 @@ Then call the `question` tool:
 ```
 
 **Rules:**
-- The `header` must be short (max 30 chars): `Round {n} | {component}/{dimension}`.
-- The `question` field carries the actual question — keep it to one or two sentences.
+- The `header` must be short (max 30 chars): `Question {n}` (EN) or equivalent in user's language. Plain and simple — no component/dimension labels.
+- The `question` field carries the actual question — keep it to one or two sentences in plain language.
 - Provide 2-4 contextually relevant options. The tool auto-adds free-text, so users can always type their own.
 - If `forceUserQuestion: true` (dialectic rhythm guard), still use the `question` tool but with minimal options — the point is to force a direct user response.
 - Score tables and progress reports (Step 4) remain as normal chat text, NOT in the question tool.
@@ -361,11 +370,13 @@ After scoring, show the user:
 | Constraints | {s} | {w} | {s*w} | {gap or "✓"} |
 | Success Criteria | {s} | {w} | {s*w} | {gap or "✓"} |
 | Context (brownfield) | {s} | {w} | {s*w} | {gap or "✓"} |
-| **Clarity** | | | **{100-score}% clear** ({prior}% → {100-score}% {↑|↓|flat}) | |
+| **Clarity** | | | **{round((1 - score) * 100)}% clear** ({round((1 - prior) * 100)}% → {round((1 - score) * 100)}% {↑|↓|flat}) | |
 
 **다음에 물어볼 것:** '{scorerOutput.nextTarget.component}' 부분의 '{scorerOutput.nextTarget.dimension}'
 
 {score <= threshold ? "이제 아이디어가 충분히 명확해졌어요! 스펙 문서를 만들어도 될 것 같아요." : "다음 질문은 '{scorerOutput.nextTarget.component}'에 대해 더 자세히 물어볼게요."}
+
+> **EN canonical:** "Question {n} done! About {round((1 - score) * 100)}% clear now. Next: the '{component}' part needs '{dimension}'." Always write in the user's language.
 ```
 
 > **Plain-language summary (always add below the table):** Write 1-2 sentences in the user's language explaining what the scores mean. Example: "'목표'는 이제 확실해졌는데, '어디까지 할 건지'는 아직 조금 헷갈려요. 다음 질문에서 그 부분을 명확하게 해볼게요."
