@@ -328,7 +328,7 @@ Also identify:
 Respond as STRICT JSON only. No prose, no code fences. All scores in [0,1].
 ```
 
-2. Pipe raw oracle output through `node references/runtime/validate.mjs --expected-type=<declaredType>`. The output exposes `scoreClamped`, `clampedFields`. If `ok: false`, re-dispatch once with the `retryHint`. If still failing, fall back to all-scores-0.5, set `degraded: true`, and continue. **Propagate** `scoreClamped` from validate output into the scorer input as `validationScoreClamped` so downstream sees clamping that happened pre-scorer.
+2. Pipe raw oracle output through `node "$RUNTIME_DIR/validate.mjs" --expected-type=<declaredType>`. The output exposes `scoreClamped`, `clampedFields`. If `ok: false`, re-dispatch once with the `retryHint`. If still failing, fall back to all-scores-0.5, set `degraded: true`, and continue. **Propagate** `scoreClamped` from validate output into the scorer input as `validationScoreClamped` so downstream sees clamping that happened pre-scorer.
 
 3. Assemble the scorer input — **include EVERY active component, not just the current round's component**. The MAX aggregation rule only works if all components are scored together. The current round's component gets fresh normalized scores from validate.mjs; every other active component carries forward its last-known scores from `scoreStateMatrix`.
 ```json
