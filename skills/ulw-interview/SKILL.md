@@ -193,11 +193,11 @@ Run this exactly once after Round 0 topology lock, BEFORE Phase 2 Round 1. Witho
 1. {component_name}: {one_sentence_plain_description}
 2. ...
 
-지금 아이디어의 {100 - globalAmbiguity}%는 명확해요. ({globalAmbiguity}%는 아직 헷갈려요)
+지금 아이디어의 {round((1 - globalAmbiguity) * 100)}%는 명확해요. ({round(globalAmbiguity * 100)}%는 아직 헷갈려요)
 제일 먼저 명확하게 만들 부분은 '{scorerOutput.nextTarget.component}'이에요.
 ```
 
-> **Note:** The score table and internal state are NOT shown here. They are kept internally for the transcript. The user sees only the plain-language summary above. Write it in the user's language (Korean example shown; translate if English).
+> **EN canonical:** "Here's what I've gathered so far! Your idea has {N} main part(s): 1. {name}: {desc}. About {round((1 - globalAmbiguity) * 100)}% is clear right now. We'll start with '{component}'." Write in the user's language; this EN version is the source of truth for content.
 
 5. Proceed to Phase 2 Round 1.
 
