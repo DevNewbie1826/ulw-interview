@@ -121,13 +121,13 @@ ULW Interview: {percent}% clarity target. (source: {source})
 4. **Announce the interview:**
 
 ```
-ULW Interview threshold: <percent>% (source: <source>)
+ULW Interview: {percent}% clarity target. (source: {source})
 
-Starting interview. I'll ask targeted questions to understand your idea thoroughly. After each answer, I'll show your clarity score. We'll proceed to spec generation once ambiguity drops below <percent>%.
+Let's figure out exactly what you want to build. I'll ask questions one at a time, and after each answer I'll show you how clear things are getting. We'll keep going until your idea is about {percent}% clear.
 
 **Your idea:** "{initial_idea}"
-**Project type:** {greenfield|brownfield}
-**Current ambiguity:** 100% (we haven't started yet)
+**Project type:** {greenfield→"starting from scratch" | brownfield→"adding to existing code"}
+**Clarity:** 0% (just starting!)
 ```
 
 ## Round 0: Topology Enumeration Gate
@@ -380,7 +380,6 @@ After scoring, show the user:
 ```
 
 > **Plain-language summary (always add below the table):** Write 1-2 sentences in the user's language explaining what the scores mean. Example: "'목표'는 이제 확실해졌는데, '어디까지 할 건지'는 아직 조금 헷갈려요. 다음 질문에서 그 부분을 명확하게 해볼게요."
-```
 
 ### Step 4b: Lateral Review Panel (milestone-triggered)
 
