@@ -31,6 +31,7 @@ The output is a **spec document** at `.omo/specs/ulw-interview-{slug}.md` — no
 - **Ask ONE question at a time** — never batch multiple questions
 - **Target the WEAKEST clarity dimension** with each question
 - **Score ambiguity after every answer** — display the score transparently
+- **Use the `question` tool for all user-facing questions:** write context, score tables, and explanations as normal chat text, then call the `question` tool with a short question + 2-4 options. This gives the user a clear visual signal that a response is needed. Long prose stays in the chat body; the question tool carries only the decision itself. The only exception is announcements (Round 0.5 scoring complete, spec generated, etc.) which are informational and do not use the tool.
 - **Gather codebase facts before asking about them** — dispatch `explore` for brownfield context before asking the user what the code already reveals
 - **Facts vs decisions:** answer factual questions (current stack, versions, existing patterns) from `explore`/`librarian` and present them as cited confirmations; route every *decision* (goals, scope, tradeoffs, desired behavior) to the user. When unsure which a question is, treat it as a decision and ask.
 - **Do not proceed to spec generation until ambiguity ≤ threshold** (default 5%) and the user confirms
@@ -105,19 +106,32 @@ Run this gate exactly once after Phase 1 initialization and before any Phase 2 a
    - **Decomposition preference (tie-breaker):** prefer user-facing surfaces or deliverables (what the user thinks of as outcomes) over implementation subsystems (what the engineer thinks of as modules). If ambiguous, ask the user which framing they want. This reduces cross-agent divergence on topology shape.
    - Do not treat implementation tasks or sub-features as top-level components unless the user framed them as independent outcomes.
 
-2. **Ask one confirmation question** before Round 1:
+2. **Write the topology as chat text**, then ask via the `question` tool:
 
+Chat text (written before the tool call):
 ```
 Round 0 | Topology confirmation | Ambiguity: not scored yet
 
 I'm reading this as {N} top-level component(s):
 1. {component_name}: {one_sentence_description}
 2. ...
-
-Is that topology right? Should any component be added, removed, merged, split, or explicitly deferred?
 ```
 
-Options: **Looks right**, **Add/remove/merge components**, **Defer one or more components**, plus free-text.
+Then call the `question` tool:
+```json
+{
+  "questions": [{
+    "header": "Round 0 | Topology",
+    "question": "Is this topology right? Should any component be added, removed, merged, split, or deferred?",
+    "options": [
+      { "label": "Looks right", "description": "Proceed with these components" },
+      { "label": "Add/remove/merge", "description": "Adjust the component list" },
+      { "label": "Defer one or more", "description": "Remove a component from this interview's scope" }
+    ]
+  }]
+}
+```
+The tool auto-adds a free-text option, so the user can always type a custom response.
 
 3. **Lock topology** after the answer. Carry the confirmed component list through Phase 2 scoring. If the user confirms one component, Phase 2 proceeds normally. If multiple components are confirmed, Phase 2 must ask follow-up questions until every active component has sufficient goal/constraint/criteria clarity.
 
@@ -169,15 +183,36 @@ Use `scorerOutput.nextTarget` verbatim — do not recompute the weakest pair in 
 
 ### Step 2: Ask the Question
 
-Present the question to the user with the current ambiguity context:
+Write the round context as chat text, then ask the actual question via the `question` tool.
 
+**Chat text** (written before the tool call):
 ```
-Round {n} | Component: {target_component_name} | Targeting: {weakest_dimension} | Why now: {one-sentence rationale} | Ambiguity: {score}%
+Round {n} | Component: {target_component_name} | Targeting: {target_dimension} | Ambiguity: {score}%
 
-{question}
+{one-sentence rationale for why this component/dimension is the bottleneck}
 ```
 
-Offer contextually relevant options plus free-text.
+Then call the `question` tool:
+```json
+{
+  "questions": [{
+    "header": "Round {n} | {component}/{dimension}",
+    "question": "{short, specific question text — one sentence}",
+    "options": [
+      { "label": "{option A}", "description": "{one-line hint}" },
+      { "label": "{option B}", "description": "{one-line hint}" },
+      { "label": "{option C}", "description": "{one-line hint}" }
+    ]
+  }]
+}
+```
+
+**Rules:**
+- The `header` must be short (max 30 chars): `Round {n} | {component}/{dimension}`.
+- The `question` field carries the actual question — keep it to one or two sentences.
+- Provide 2-4 contextually relevant options. The tool auto-adds free-text, so users can always type their own.
+- If `forceUserQuestion: true` (dialectic rhythm guard), still use the `question` tool but with minimal options — the point is to force a direct user response.
+- Score tables and progress reports (Step 4) remain as normal chat text, NOT in the question tool.
 
 ### Step 3: Score Ambiguity
 
@@ -339,7 +374,28 @@ When ambiguity ≤ threshold (or hard cap / early exit):
 
 1. **Closure / Acceptance Guard.** Precedence: Round 20 hard cap > closure guard > readiness math. Even when scorer reports `ready: true`, do not treat the math as completion. Run an independent readiness audit via `oracle`. **Mechanical coverage check:** read `coverageGaps` from the last scorer output — if it is non-empty, the closure guard REJECTS and the highest-priority gap drives the next question. Otherwise the oracle audit checks: no unresolved or disputed trigger remains, and no agent-confirmed fact is standing in for user-confirmed truth (route these to the user). If the oracle audit finds a material gap, override the gate to the user — "The math says ready, but I am not accepting it yet because {gap}" — ask the single highest-impact follow-up, and return to Phase 2. **Retry cap:** the closure guard may reject at most 2 times. After the 2nd rejection, OR if Round 20 has been reached, OR if the user invoked early exit with `globalAmbiguity > threshold + 0.20`, emit an **Incomplete Spec Report** (see Phase 3 Step 5) instead of looping. When returning to Phase 2 from the closure guard, the round number CONTINUES (does not reset) and re-entry targets the specific component/dimension flagged as the gap.
 
-2. **Restate gate.** Once closure passes, collapse the agreed answers into ONE sentence goal that covers every active component. Confirm with the user: "If someone read only this line, would they reach the same outcome you have in mind?" Options: **Yes, crystallize**, **Adjust wording**, **Missing scope**. On "Adjust wording" or "Missing scope", collect the correction, route it back through Phase 2 scoring (a correction can change ambiguity), and re-run both gates. Cap at two loops; if alignment is not reached, return to Phase 2.
+2. **Restate gate.** Once closure passes, collapse the agreed answers into ONE sentence goal that covers every active component. Write the goal as chat text, then confirm via the `question` tool:
+
+Chat text:
+```
+**Crystallized goal:** {one-sentence goal}
+```
+
+Then call the `question` tool:
+```json
+{
+  "questions": [{
+    "header": "Goal confirmation",
+    "question": "If someone read only this line, would they reach the same outcome you have in mind?",
+    "options": [
+      { "label": "Yes, crystallize", "description": "Proceed to spec generation with this goal" },
+      { "label": "Adjust wording", "description": "The goal is right but the phrasing needs work" },
+      { "label": "Missing scope", "description": "The goal leaves something out" }
+    ]
+  }]
+}
+```
+On "Adjust wording" or "Missing scope", collect the correction, route it back through Phase 2 scoring (a correction can change ambiguity), and re-run both gates. Cap at two loops; if alignment is not reached, return to Phase 2.
 
 
 3. **Generate the specification** from the full interview transcript. Write it to `.omo/specs/ulw-interview-{slug}.md` using the `write` tool.
