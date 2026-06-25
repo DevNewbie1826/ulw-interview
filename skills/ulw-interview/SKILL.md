@@ -79,18 +79,20 @@ Internal state, runtime calls, scorer fields, and trigger names are **never show
 
 ## Runtime Contract (authoritative)
 
-All numerical scoring, validation, band classification, stall detection, and trigger math is delegated to a deterministic runtime under `references/runtime/`. The LLM NEVER computes ambiguity by hand. The runtime is the source of truth; if prose and runtime disagree, the runtime is correct.
+All numerical scoring, validation, band classification, stall detection, and trigger math is delegated to a deterministic runtime. The LLM NEVER computes ambiguity by hand. The runtime is the source of truth; if prose and runtime disagree, the runtime is correct.
+
+**Path resolution (critical):** The runtime scripts live in the `references/runtime/` directory **next to this SKILL.md file**. The skill system exposes this file's location. Resolve `RUNTIME_DIR` as the directory containing SKILL.md + `/references/runtime/`. Invoke scripts as `node "$RUNTIME_DIR/validate.mjs"` and `node "$RUNTIME_DIR/scorer.mjs"`. Do NOT use bare `references/runtime/` — that only works if cwd is the skill directory.
 
 **Required pipeline at every scoring step:**
 1. Dispatch `oracle` with the transcript and the scoring prompt.
-2. Pipe raw oracle output through `node references/runtime/validate.mjs --expected-type=<greenfield|brownfield>`. The CLI arg is authoritative — pass the type detected in Phase 1 Step 2. If `ok: false`, re-dispatch once with the `retryHint`. If still failing, fall back to conservative scores (all dims 0.5), set `degraded: true`, and continue. The output exposes `scoreClamped` and `clampedFields` so downstream decisions can observe clamping.
-3. Pipe the normalized output (plus prior state) through `node references/runtime/scorer.mjs`. Use the JSON output for all subsequent decisions.
+2. Pipe raw oracle output through `node "$RUNTIME_DIR/validate.mjs" --expected-type=<greenfield|brownfield>`. If `ok: false`, re-dispatch once with `retryHint`. If still failing, fall back to all-scores-0.5, set `degraded: true`. Output exposes `scoreClamped` and `clampedFields`.
+3. Pipe the normalized output (plus prior state) through `node "$RUNTIME_DIR/scorer.mjs"`. Use the JSON output for all subsequent decisions.
 
 **What the LLM still owns:** question generation, topology enumeration, lateral panel dispatch (subject to scorer's `nextPanelEligible` flag and the per-interview panel ceiling), closure judgment, and the restate gate.
 
 **Transcript compression (mandatory above 4000 tokens):** before each oracle scoring dispatch, if the accumulated transcript exceeds 4000 tokens, compress the OLDEST half via a separate oracle call (`Summarize the following interview Q&A rounds in ≤500 tokens, preserving every confirmed decision, every fired trigger, and every score change.`) and replace those rounds in the working transcript with the summary. Keep the last 2 rounds verbatim. This bounds per-round oracle cost growth from O(n²) to O(n) without losing decisions. The full uncompressed transcript is still written to the final spec.
 
-See `references/runtime/README.md` for the full contract, constants, and fallback policy.
+See `references/runtime/README.md` (in the skill directory) for the full contract.
 
 ## Phase 0: Resolve Threshold (blocking)
 
@@ -125,7 +127,14 @@ Write in the user's language (EN canonical shown). The internal threshold value,
 4. **Announce the interview:**
 
 ```
-ULW Interview: {percent}% clarity target. (source: {source})
+Let's figure out exactly what you want to build!
+
+I'll ask questions one at a time. After each answer, I'll show you how clear things are getting.
+We'll keep going until your idea is about {percent}% clear.
+
+**Your idea:** "{initial_idea}"
+**Starting from:** {"scratch" if greenfield | "existing code" if brownfield}
+**Clarity:** 0% (just starting!)
 
 Let's figure out exactly what you want to build. I'll ask questions one at a time, and after each answer I'll show you how clear things are getting. We'll keep going until your idea is about {percent}% clear.
 
@@ -164,7 +173,7 @@ Then call the `question` tool:
 {
   "questions": [{
     "header": "Big picture",
-    "question": "Does this look right? Anything to add, remove, or change?"
+    "question": "Does this look right? Anything to add, remove, or change?",
     "options": [
       { "label": "Looks right", "description": "Proceed with these components" },
       { "label": "Add/remove/merge", "description": "Adjust the component list" },
@@ -208,7 +217,7 @@ Run this exactly once after Round 0 topology lock, BEFORE Phase 2 Round 1. Witho
 
 ## Phase 2: Interview Loop
 
-Repeat until `ambiguity ≤ threshold` OR user exits early:
+Repeat until `ambiguity ≤ threshold` OR user exits early. **Closure re-entry override:** if returning from Phase 3 closure guard, ask exactly ONE forced follow-up using `scorerOutput.nextTarget` — even if `globalAmbiguity ≤ threshold` — then rescore. Do NOT immediately exit the loop on re-entry.
 
 ### Step 1: Generate Next Question
 
@@ -345,7 +354,7 @@ Respond as STRICT JSON only. No prose, no code fences. All scores in [0,1].
 }
 ```
 
-4. Pipe through `node references/runtime/scorer.mjs`. Read the JSON output. Fields: `globalAmbiguity`, `band`, `bandChanged`, `stallDetected`, `ready`, `skipToSpec`, `nextPanelEligible`, `suppressPanelForOscillation`, `dispatchPanel` (= `nextPanelEligible && !suppressPanelForOscillation && bandChanged`), `coverageGaps` (array of `component/dim: score < 0.9` or `component/dim: missing` strings — drives closure guard), `thresholdClamped`, `scoreClamped`, `validationScoreClamped`, `negativeAmbiguityClamped`, `streakCounter`, `forceUserQuestion`, `nextTarget` (`{ component, dimension }` — authoritative target for the next question; do not recompute in prose).
+4. Pipe through `node "$RUNTIME_DIR/scorer.mjs"`. Read the JSON output. Fields: `globalAmbiguity`, `band`, `bandChanged`, `stallDetected`, `ready`, `skipToSpec`, `nextPanelEligible`, `suppressPanelForOscillation`, `dispatchPanel` (= `nextPanelEligible && !suppressPanelForOscillation && bandChanged`), `coverageGaps`, `thresholdClamped`, `scoreClamped`, `validationScoreClamped`, `negativeAmbiguityClamped`, `streakCounter`, `forceUserQuestion`, `nextTarget` (`{ component, dimension }` — authoritative target; do not recompute).
 
 5. **Update `scoreStateMatrix[currentComponent]`** with the `perComponent` entry whose `name` matches. Other components' entries in scoreStateMatrix are unchanged this round.
 
@@ -412,7 +421,7 @@ Dispatch each persona as a separate `oracle` call with its own copy of the promp
 
 **Panel cooldown and ceiling (cost controls):**
 - A panel cannot fire within `panelCooldown` (default 2) rounds of the previous panel. Check `dispatchPanel` (= `nextPanelEligible && !suppressPanelForOscillation && bandChanged`) in the scorer output. If false, skip the panel and note the cooldown, oscillation suppression, or unchanged band in the transcript.
-- Per-interview panel ceiling: 6 persona-dispatches total. Override via `.omo/settings.json` `omo.ulwInterview.panelCeiling`. After the ceiling, panels are skipped and the agent notes the degradation.
+- Per-interview panel ceiling: 6 persona-dispatches total. Override via `.omo/settings.json` `omo.ulwInterview.panelCeiling`. **Before dispatching:** compute `remaining = panelCeiling - panelDispatchCount`. If `remaining <= 0`, skip the panel entirely. If `remaining < 4` (not enough for all personas), dispatch only the highest-priority personas that fit and note the degradation.
 - Bidirectional band oscillation: the scorer reports `suppressPanelForOscillation: true` when the same band-edge has been crossed 2+ times in the last 4 transitions. When true, the panel is suppressed regardless of cooldown.
 
 **Stall detection (deterministic):** the runtime computes `stallDetected` as a windowed max-min over the last 3 global ambiguities ≤ 0.05. The LLM does not compute this. On `stallDetected: true`, fire ontology escalation.
