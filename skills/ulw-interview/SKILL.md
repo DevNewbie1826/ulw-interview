@@ -61,6 +61,10 @@ Internal state, runtime calls, scorer fields, and trigger names are **never show
 | "Coverage gaps" | "이 부분은 아직 구체적으로 정해지지 않았어요" |
 | "Closure guard" | "거의 다 왔어요! 마지막으로 확인할 게 있어요" |
 | "Incomplete Spec Report" | "아직 몇 가지가 명확하지 않아서, 지금까지 나온 걸 정리해둘게요" |
+| "goal" (dimension) | "무엇을 만들지" (EN: "what we're building") |
+| "constraints" (dimension) | "어디까지 할 건지" (EN: "boundaries / what's out of scope") |
+| "criteria" (dimension) | "완성된 건지 어떻게 알지" (EN: "how we'll know it's done") |
+| "context" (dimension) | "기존 코드와 어떻게 맞출지" (EN: "how it fits with existing code") |
 
 ### Rules
 
@@ -95,13 +99,13 @@ Complete this before anything else — before initialization, before the first q
 1. Read `omo.ulwInterview.ambiguityThreshold` from `.omo/settings.json`. Default: `0.05` (95% clarity required).
 2. **Validate threshold.** The runtime enforces `(1e-6, 0.30]`. If the configured value is missing or malformed, use the default `0.05`. If the configured value is ≤ 0 or > 0.30, pass it to `scorer.mjs` unchanged — the runtime clamps and reports via `thresholdClamped: true` in the output. The source label becomes `.omo/settings.json | default (missing)` or `.omo/settings.json | clamped by runtime` accordingly. Do not silently substitute `0.05` for out-of-range values; let the runtime handle it deterministically.
 3. Calculate the percentage form (e.g. `0.05` → `95%`).
-4. Emit the required first line to the user before any other announcement:
+4. Emit the user-facing first line (plain language only — the technical details stay in the transcript, NOT shown to the user):
 
 ```
-ULW Interview: {percent}% clarity target. (source: {source})
+We'll keep going until your idea is about {percent}% clear. Let's start!
 ```
 
-> **Plain-language version (ALSO show this to the user):** "이 인터뷰는 아이디어가 {percent}% 명확해질 때까지 계속돼요." (EN: "We'll keep going until your idea is {percent}% clear.") The technical line above is for the transcript; the plain-language version is what the user actually reads.
+Write in the user's language (EN canonical shown). The internal threshold value, source, and clamp status are recorded in the transcript but never shown to the user.
 
 5. Carry the threshold forward mechanically through every step. Do not hardcode. Pass it as the `threshold` field of every `scorer.mjs` invocation.
 
@@ -159,8 +163,8 @@ Then call the `question` tool:
 ```json
 {
   "questions": [{
-    "header": "Round 0 | Topology",
-    "question": "Is this topology right? Should any component be added, removed, merged, split, or deferred?",
+    "header": "Big picture",
+    "question": "Does this look right? Anything to add, remove, or change?"
     "options": [
       { "label": "Looks right", "description": "Proceed with these components" },
       { "label": "Add/remove/merge", "description": "Adjust the component list" },
@@ -173,7 +177,7 @@ The tool auto-adds a free-text option, so the user can always type a custom resp
 
 3. **Lock topology** after the answer. Carry the confirmed component list through Phase 2 scoring. If the user confirms one component, Phase 2 proceeds normally. If multiple components are confirmed, Phase 2 must ask follow-up questions until every active component has sufficient goal/constraint/criteria clarity.
 
-4. **Topology refusal fallback.** If the user explicitly refuses to confirm any topology (says "I don't know" / "you decide" / "whatever you think" on **two consecutive** prompts), the agent falls back to a single-component topology covering the entire idea, announces `Round 0 | Topology fallback | single-component mode (user declined to confirm)`, and continues. Note the fallback in the transcript and resume normal targeting in Round 0.5.
+4. **Topology refusal fallback.** If the user explicitly refuses to confirm any topology (says "I don't know" / "you decide" / "whatever you think" on **two consecutive** prompts), the agent falls back to a single-component topology covering the entire idea, announces to the user: `제가 전체를 하나로 다루겠습니다.` (EN: "I'll treat this as one big piece for now."), and continues. Note the fallback in the transcript (internal) and resume normal targeting in Round 0.5.
 
 5. **Topology reopen protocol (trigger D).** If a Phase 2 answer fires trigger D — scope expansion — the new entity is added to the active topology. Run Round 0.5 initial scoring for the new entity (below). If active components exceed 6 after addition, ask the user to merge or defer before continuing Phase 2.
 
@@ -372,9 +376,9 @@ After scoring, show the user:
 | Context (brownfield) | {s} | {w} | {s*w} | {gap or "✓"} |
 | **Clarity** | | | **{round((1 - score) * 100)}% clear** ({round((1 - prior) * 100)}% → {round((1 - score) * 100)}% {↑|↓|flat}) | |
 
-**다음에 물어볼 것:** '{scorerOutput.nextTarget.component}' 부분의 '{scorerOutput.nextTarget.dimension}'
+**{score <= threshold ? "DONE" : "Next"}:** {score <= threshold ? "아이디어가 충분히 명확해졌어요! 스펙을 만들어볼게요." : "다음: '" + scorerOutput.nextTarget.component + "' 부분에서 '" + scorerOutput.nextTarget.dimension + "'을(를) 더 명확하게 해볼게요."}
 
-{score <= threshold ? "이제 아이디어가 충분히 명확해졌어요! 스펙 문서를 만들어도 될 것 같아요." : "다음 질문은 '{scorerOutput.nextTarget.component}'에 대해 더 자세히 물어볼게요."}
+> When score <= threshold, do NOT show a "next question" line — show the ready message only. When not ready, show the next target only, no ready message.
 
 > **EN canonical:** "Question {n} done! About {round((1 - score) * 100)}% clear now. Next: the '{component}' part needs '{dimension}'." Always write in the user's language.
 ```
@@ -433,17 +437,17 @@ When ambiguity ≤ threshold (or hard cap / early exit):
 
 Chat text:
 ```
-**Crystallized goal:** {one-sentence goal}
+**한 줄 요약:** {one-sentence goal}
 ```
 
 Then call the `question` tool:
 ```json
 {
   "questions": [{
-    "header": "Goal confirmation",
-    "question": "If someone read only this line, would they reach the same outcome you have in mind?",
+    "header": "Goal check",
+    "question": "If someone read only this sentence, would they build the right thing?",
     "options": [
-      { "label": "Yes, crystallize", "description": "Proceed to spec generation with this goal" },
+      { "label": "Looks good, let's go!", "description": "This captures what I want" },
       { "label": "Adjust wording", "description": "The goal is right but the phrasing needs work" },
       { "label": "Missing scope", "description": "The goal leaves something out" }
     ]
@@ -510,7 +514,9 @@ On "Adjust wording" or "Missing scope", collect the correction, route it back th
 
 4. **Stop.** The spec is the deliverable. Do NOT auto-invoke execution. The user can take the spec to `/ulw-plan` for planning or proceed however they choose.
 
-## Phase 3 Step 5: Incomplete Spec Report
+## Phase 3 Step 5: Summary So Far (when interview stops early)
+
+> **Internal name:** Incomplete Spec Report. **User-facing name:** "지금까지 정리" (EN: "Summary so far"). Never say "Incomplete Spec Report" to the user.
 
 Emit this INSTEAD of a normal spec when:
 - Round 20 hard cap reached AND closure guard rejects, OR
