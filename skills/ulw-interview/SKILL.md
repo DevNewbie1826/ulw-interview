@@ -151,7 +151,7 @@ Run this exactly once after Round 0 topology lock, BEFORE Phase 2 Round 1. Witho
 ```
 Round 0.5 | Initial scoring complete | Ambiguity: {globalAmbiguity}%
 
-Seeded scores for {N} component(s). Round 1 will target {weakest_component}/{weakest_dimension} (the lowest pair).
+Seeded scores for {N} component(s). Round 1 will target {scorerOutput.nextTarget.component}/{scorerOutput.nextTarget.dimension} (the lowest pair).
 ```
 
 5. Proceed to Phase 2 Round 1.
@@ -352,7 +352,7 @@ Dispatch each persona as a separate `oracle` call with its own copy of the promp
 **Ontology escalation:** if ambiguity stalls (same score ±0.05 for 3 rounds) or stays > 0.30 after 8 rounds, instruct `contrarian` + `architect` to ask "What IS this, really?" — identify the core entity versus supporting views before returning to feature questions.
 
 **Panel cooldown and ceiling (cost controls):**
-- A panel cannot fire within `panelCooldown` (default 2) rounds of the previous panel. Check `dispatchPanel` (= `nextPanelEligible && !suppressPanelForOscillation`) in the scorer output. If false, skip the panel and note the cooldown or oscillation suppression in the transcript.
+- A panel cannot fire within `panelCooldown` (default 2) rounds of the previous panel. Check `dispatchPanel` (= `nextPanelEligible && !suppressPanelForOscillation && bandChanged`) in the scorer output. If false, skip the panel and note the cooldown, oscillation suppression, or unchanged band in the transcript.
 - Per-interview panel ceiling: 6 persona-dispatches total. Override via `.omo/settings.json` `omo.ulwInterview.panelCeiling`. After the ceiling, panels are skipped and the agent notes the degradation.
 - Bidirectional band oscillation: the scorer reports `suppressPanelForOscillation: true` when the same band-edge has been crossed 2+ times in the last 4 transitions. When true, the panel is suppressed regardless of cooldown.
 

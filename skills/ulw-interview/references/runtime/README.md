@@ -81,11 +81,15 @@ empty). Scores are clamped to `[0,1]`. Unknown fields are tolerated.
   "priorAmbiguity": 0.45,                          // optional
   "priorBand": "progress",                         // optional
   "priorRounds": [0.55, 0.50, 0.47],               // optional, last N global ambiguities
+  "priorBandHistory": ["progress", "refined"],     // optional, drives oscillation suppression
   "priorPanelRound": 3,                            // optional
   "currentRound": 6,                               // optional, 1-based Phase 2 round
   "triggers": [                                    // optional, fires this round
     { "component": "API", "dim": "goal", "type": "C" }
   ],
+  "validationScoreClamped": false,                 // optional, propagated from validate.mjs
+  "streakCounter": 0,                              // optional, dialectic rhythm guard state
+  "lastRoundResolvedWithoutUser": false,           // optional, increments streak when true
   "degraded": false                                // optional, set when validation fallback was used
 }
 ```
@@ -106,9 +110,16 @@ empty). Scores are clamped to `[0,1]`. Unknown fields are tolerated.
   "ready": true,
   "skipToSpec": true,
   "nextPanelEligible": true,
+  "suppressPanelForOscillation": false,
+  "dispatchPanel": true,                            // = nextPanelEligible && !suppressPanelForOscillation && bandChanged
   "panelCooldown": 2,
   "scoreClamped": false,
+  "validationScoreClamped": false,
   "negativeAmbiguityClamped": false,
+  "coverageGaps": [],                               // ["component/dim: score < 0.9", ...] for closure guard
+  "streakCounter": 0,
+  "forceUserQuestion": false,
+  "nextTarget": { "component": "API", "dimension": "constraints" }, // authoritative next-question target
   "degraded": false,
   "currentRound": 6,
   "triggerDelta": -0.15
@@ -177,7 +188,7 @@ The runtime is deliberately narrow. The LLM continues to own:
 node references/runtime/test.mjs
 ```
 
-All assertions should pass (44 at the time of writing; the count grows as the
+All assertions should pass (46 at the time of writing; the count grows as the
 runtime matures). The test file is the canonical reference for expected behavior
 — read it alongside this README.
 
