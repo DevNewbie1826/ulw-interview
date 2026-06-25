@@ -41,6 +41,38 @@ The output is a **spec document** at `.omo/specs/ulw-interview-{slug}.md` — no
 - **Multi-component targeting:** when the locked topology has multiple active components, rotate targeting across active components rather than drilling into one — depth-first clarity on one component must not hide ambiguity in siblings.
 - **Lateral review panel at milestones:** convene a multi-persona panel at ambiguity-milestone transitions to expose blind spots from independent perspectives (see Phase 2 Step 4b).
 
+## Communication Style (user-facing text only)
+
+**The user is not an engineer. Speak like you're explaining to a curious 12-year-old.**
+
+### Internal vs user-facing language
+
+Internal state, runtime calls, scorer fields, and trigger names are **never shown to the user**. Translate everything to plain language when writing chat text or `question` tool content.
+
+| Internal concept | Say this to the user |
+|---|---|
+| "Ambiguity: 45%" | "지금 아이디어의 약 55%는 명확해요. 45%는 아직 헷갈려요." (or in user's language) |
+| "Round 0 Topology confirmation" | "제가 이해한 큰 그림을 확인해주세�¤" |
+| "Round 0.5 Initial scoring" | "일단 지금까지 들은 걸로 정리해봤어요" |
+| "Component X / dimension Y targeting" | "'X' 부분에서 'Y'가 아직 불명확해요" |
+| "Trigger A/B/C/D fired" | (don't mention — just ask the follow-up question) |
+| "Band: initial/progress/refined/ready" | (don't mention — translate to a progress metaphor) |
+| "Dialectic rhythm guard" | (don't mention — just ask the user) |
+| "Coverage gaps" | "이 부분은 아직 구체적으로 정해지지 않았어요" |
+| "Closure guard" | "거의 다 왔어요! 마지막으로 확인할 게 있어요" |
+| "Incomplete Spec Report" | "아직 몇 가지가 명확하지 않아서, 지금까지 나온 걸 정리해둘게요" |
+
+### Rules
+
+1. **Short sentences.** One idea per sentence. Max ~20 words each.
+2. **No jargon.** Replace every technical term with an everyday word. If you must use a technical term (e.g., "API"), explain it in parentheses: "API (프로그램끼리 대화하는 방법)".
+3. **Show progress as a percentage with feeling.** Instead of "Ambiguity: 30%", say "아이디어의 70%가 명확해졌어요! 점점 선명해지고 있어요." Use the score table for precision (the user can read it), but add a one-sentence plain-language summary.
+4. **Explain WHY each question matters.** Before asking, say what you'll learn from the answer and how it helps. Example: "이 질문에 답해주시면, 어떤 기기에서 작동해야 하는지 확실해져요."
+5. **Use analogies.** "이건 레고로 집을 짓는 것과 같아요 — 먼저 기초를 단단히 해야 해요."
+6. **Be friendly and encouraging.** "좋은 답변이에요!", "그렇군요, 이제 이해가 됐어요.", "거의 다 왔어요!"
+7. **Respect the user's language.** If the user speaks Korean, speak Korean. If English, speak English. Match their formality level. The plain-language rules above apply in whatever language you use.
+8. **Score tables stay technical** (they're for precision), but always add a plain-language summary line below them.
+
 ## Runtime Contract (authoritative)
 
 All numerical scoring, validation, band classification, stall detection, and trigger math is delegated to a deterministic runtime under `references/runtime/`. The LLM NEVER computes ambiguity by hand. The runtime is the source of truth; if prose and runtime disagree, the runtime is correct.
@@ -149,10 +181,17 @@ Run this exactly once after Round 0 topology lock, BEFORE Phase 2 Round 1. Witho
 4. Announce to the user:
 
 ```
-Round 0.5 | Initial scoring complete | Ambiguity: {globalAmbiguity}%
+일단 지금까지 들은 걸로 정리해봤어요!
 
-Seeded scores for {N} component(s). Round 1 will target {scorerOutput.nextTarget.component}/{scorerOutput.nextTarget.dimension} (the lowest pair).
+아이디어가 {N}개 부분으로 나뉘는 것 같아요:
+1. {component_name}: {one_sentence_plain_description}
+2. ...
+
+지금 아이디어의 {100 - globalAmbiguity}%는 명확해요. ({globalAmbiguity}%는 아직 헷갈려요)
+제일 먼저 명확하게 만들 부분은 '{scorerOutput.nextTarget.component}'이에요.
 ```
+
+> **Note:** The score table and internal state are NOT shown here. They are kept internally for the transcript. The user sees only the plain-language summary above. Write it in the user's language (Korean example shown; translate if English).
 
 5. Proceed to Phase 2 Round 1.
 
@@ -187,16 +226,18 @@ Write the round context as chat text, then ask the actual question via the `ques
 
 **Chat text** (written before the tool call):
 ```
-Round {n} | Component: {target_component_name} | Targeting: {target_dimension} | Ambiguity: {score}%
+지금 아이디어의 {100 - score}%는 명확해요. ({score}%는 아직 헷갈려요)
 
-{one-sentence rationale for why this component/dimension is the bottleneck}
+'{target_component_name}' 부분에서 '{target_dimension}'이(가) 아직 불명확해요.
+{one-sentence plain-language explanation of why this matters, e.g. '이 질문에 답해주시면 어떤 환경에서 작동해야 하는지 알 수 있어요.'}
 ```
 
 Then call the `question` tool:
 ```json
 {
   "questions": [{
-    "header": "Round {n} | {component}/{dimension}",
+    "header": "질문 {n}",
+    "question": "{short, specific question in plain language — one sentence}",
     "question": "{short, specific question text — one sentence}",
     "options": [
       { "label": "{option A}", "description": "{one-line hint}" },
@@ -311,19 +352,23 @@ Brownfield adds a 15% Context Clarity dimension because safely modifying existin
 After scoring, show the user:
 
 ```
-Round {n} complete.
+{n}번째 질문 완료!
 
+(Score table — for precision, stays technical)
 | Dimension | Score | Weight | Weighted | Gap |
 |-----------|-------|--------|----------|-----|
-| Goal | {s} | {w} | {s*w} | {gap or "Clear"} |
-| Constraints | {s} | {w} | {s*w} | {gap or "Clear"} |
-| Success Criteria | {s} | {w} | {s*w} | {gap or "Clear"} |
-| Context (brownfield) | {s} | {w} | {s*w} | {gap or "Clear"} |
-| **Ambiguity** | | | **{prior}% → {score}% {↑|↓|flat}** | {trigger name if up} |
+| Goal | {s} | {w} | {s*w} | {gap or "✓"} |
+| Constraints | {s} | {w} | {s*w} | {gap or "✓"} |
+| Success Criteria | {s} | {w} | {s*w} | {gap or "✓"} |
+| Context (brownfield) | {s} | {w} | {s*w} | {gap or "✓"} |
+| **Clarity** | | | **{100-score}% clear** ({prior}% → {100-score}% {↑|↓|flat}) | |
 
-**Next target:** {scorerOutput.nextTarget.component}/{scorerOutput.nextTarget.dimension} — {rationale from perComponent scores}
+**다음에 물어볼 것:** '{scorerOutput.nextTarget.component}' 부분의 '{scorerOutput.nextTarget.dimension}'
 
-{score <= threshold ? "Clarity threshold met! Ready to generate spec." : "Focusing next question on: {scorerOutput.nextTarget.component}/{scorerOutput.nextTarget.dimension}"}
+{score <= threshold ? "이제 아이디어가 충분히 명확해졌어요! 스펙 문서를 만들어도 될 것 같아요." : "다음 질문은 '{scorerOutput.nextTarget.component}'에 대해 더 자세히 물어볼게요."}
+```
+
+> **Plain-language summary (always add below the table):** Write 1-2 sentences in the user's language explaining what the scores mean. Example: "'목표'는 이제 확실해졌는데, '어디까지 할 건지'는 아직 조금 헷갈려요. 다음 질문에서 그 부분을 명확하게 해볼게요."
 ```
 
 ### Step 4b: Lateral Review Panel (milestone-triggered)
