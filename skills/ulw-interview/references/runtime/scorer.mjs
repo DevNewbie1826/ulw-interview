@@ -394,6 +394,7 @@ function main() {
     streakCounter,
     forceUserQuestion,
     nextTarget,
+    degraded: input.degraded === true,
     currentRound,
     triggerDelta: TRIGGER_DELTA,
   };

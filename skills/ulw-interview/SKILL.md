@@ -372,7 +372,7 @@ Dispatch each persona as a separate `oracle` call with its own copy of the promp
 
 When ambiguity ≤ threshold (or hard cap / early exit):
 
-1. **Closure / Acceptance Guard.** Precedence: Round 20 hard cap > closure guard > readiness math. Even when scorer reports `ready: true`, do not treat the math as completion. Run an independent readiness audit via `oracle`. **Mechanical coverage check:** read `coverageGaps` from the last scorer output — if it is non-empty, the closure guard REJECTS and the highest-priority gap drives the next question. Otherwise the oracle audit checks: no unresolved or disputed trigger remains, and no agent-confirmed fact is standing in for user-confirmed truth (route these to the user). If the oracle audit finds a material gap, override the gate to the user — "The math says ready, but I am not accepting it yet because {gap}" — ask the single highest-impact follow-up, and return to Phase 2. **Retry cap:** the closure guard may reject at most 2 times. After the 2nd rejection, OR if Round 20 has been reached, OR if the user invoked early exit with `globalAmbiguity > threshold + 0.20`, emit an **Incomplete Spec Report** (see Phase 3 Step 5) instead of looping. When returning to Phase 2 from the closure guard, the round number CONTINUES (does not reset) and re-entry targets the specific component/dimension flagged as the gap.
+1. **Closure / Acceptance Guard.** Precedence: Round 20 hard cap > closure guard > readiness math. Even when scorer reports `ready: true`, do not treat the math as completion. Run an independent readiness audit via `oracle`. **Mechanical coverage check:** read `coverageGaps` from the last scorer output — if it is non-empty, the closure guard REJECTS and re-entry uses `scorerOutput.nextTarget` as the next question target (do not pick a target yourself). Otherwise the oracle audit checks: no unresolved or disputed trigger remains, and no agent-confirmed fact is standing in for user-confirmed truth (route these to the user). If the oracle audit finds a material gap, override the gate to the user — "The math says ready, but I am not accepting it yet because {gap}" — ask the single highest-impact follow-up, and return to Phase 2. **Retry cap:** the closure guard may reject at most 2 times. After the 2nd rejection, OR if Round 20 has been reached, OR if the user invoked early exit with `globalAmbiguity > threshold + 0.20`, emit an **Incomplete Spec Report** (see Phase 3 Step 5) instead of looping. When returning to Phase 2 from the closure guard, the round number CONTINUES (does not reset) and re-entry targets `scorerOutput.nextTarget`.
 
 2. **Restate gate.** Once closure passes, collapse the agreed answers into ONE sentence goal that covers every active component. Write the goal as chat text, then confirm via the `question` tool:
 
@@ -510,7 +510,7 @@ Optional settings in `.omo/settings.json`:
 
 | Key | Default | Valid range | Notes |
 |---|---|---|---|
-| `ambiguityThreshold` | `0.05` | `(0, 0.30]` | Out-of-range values are clamped by `scorer.mjs`. `0.10` recommended for product discovery; `0.05` for safety/compliance. |
+| `ambiguityThreshold` | `0.05` | `(1e-6, 0.30]` | Out-of-range values are clamped by `scorer.mjs`. `0.10` recommended for product discovery; `0.05` for safety/compliance. |
 | `panelCeiling` | `6` | positive integer | Total persona-dispatches allowed per interview. After ceiling, panels are skipped. |
 
 ## Escalation And Stop Conditions

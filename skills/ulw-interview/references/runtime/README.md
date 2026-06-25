@@ -51,7 +51,9 @@ no network, no fs writes (except stdout). Stdlib only.
     "triggers": [ { "dim": "criteria", "type": "C" } ],
     "justification": "...",                        // optional, echoed
     "gap": "..."                                   // optional, echoed
-  }
+  },
+  "scoreClamped": false,                            // true if any score was clamped to [0,1]
+  "clampedFields": []                              // e.g. ["goal"] if goal was clamped
 }
 ```
 
