@@ -36,7 +36,7 @@ The output is a **spec document** at `.omo/specs/ulw-interview-{slug}.md` — no
 - **Facts vs decisions:** answer factual questions (current stack, versions, existing patterns) from `explore`/`librarian` and present them as cited confirmations; route every *decision* (goals, scope, tradeoffs, desired behavior) to the user. When unsure which a question is, treat it as a decision and ask.
 - **Do not proceed to spec generation until ambiguity ≤ threshold** (default 5%) and the user confirms
 - **Allow early exit** with a clear warning if ambiguity is still high
-- **Default to English** unless the user's language is obvious from context
+- **Detect the user's language** per Communication Style Rule 7; default to English only before the first user message
 - **Dialectic rhythm guard:** track a streak counter — increment when a round resolves without direct user judgment (agent-confirmed facts from `explore`/`librarian`); reset to 0 on any direct user answer. If the streak reaches 3, route the next question directly to the user even if it looks auto-answerable. The interview is with the human, not the codebase.
 - **Multi-component targeting:** when the locked topology has multiple active components, rotate targeting across active components rather than drilling into one — depth-first clarity on one component must not hide ambiguity in siblings.
 - **Lateral review panel at milestones:** convene a multi-persona panel at ambiguity-milestone transitions to expose blind spots from independent perspectives (see Phase 2 Step 4b).
@@ -51,30 +51,40 @@ Internal state, runtime calls, scorer fields, and trigger names are **never show
 
 | Internal concept | Say this to the user |
 |---|---|
-| "Ambiguity: 45%" | "지금 아이디어의 약 55%는 명확해요. 45%는 아직 헷갈려요." (or in user's language) |
-| "Round 0 Topology confirmation" | "제가 이해한 큰 그림을 확인해주세요" (EN: "Let me check if I got the big picture right") |
-| "Round 0.5 Initial scoring" | "일단 지금까지 들은 걸로 정리해봤어요" |
-| "Component X / dimension Y targeting" | "'X' 부분에서 'Y'가 아직 불명확해요" |
+| "Ambiguity: 45%" | "About 55% of your idea is clear right now. 45% is still fuzzy." |
+| "Round 0 Topology confirmation" | "Let me check if I got the big picture right" |
+| "Round 0.5 Initial scoring" | "Here's what I've gathered so far" |
+| "Component X / dimension Y targeting" | "The 'X' part is still unclear on 'Y'" |
 | "Trigger A/B/C/D fired" | (don't mention — just ask the follow-up question) |
 | "Band: initial/progress/refined/ready" | (don't mention — translate to a progress metaphor) |
 | "Dialectic rhythm guard" | (don't mention — just ask the user) |
-| "Coverage gaps" | "이 부분은 아직 구체적으로 정해지지 않았어요" |
-| "Closure guard" | "거의 다 왔어요! 마지막으로 확인할 게 있어요" |
-| "Incomplete Spec Report" | "아직 몇 가지가 명확하지 않아서, 지금까지 나온 걸 정리해둘게요" |
-| "goal" (dimension) | "무엇을 만들지" (EN: "what we're building") |
-| "constraints" (dimension) | "어디까지 할 건지" (EN: "boundaries / what's out of scope") |
-| "criteria" (dimension) | "완성된 건지 어떻게 알지" (EN: "how we'll know it's done") |
-| "context" (dimension) | "기존 코드와 어떻게 맞출지" (EN: "how it fits with existing code") |
+| "Coverage gaps" | "This part hasn't been decided in detail yet" |
+| "Closure guard" | "Almost there! Just one last thing to check" |
+| "Incomplete Spec Report" | "A few things are still unclear, so I'll write up what we have so far" |
+| "goal" (dimension) | "what we're building" |
+| "constraints" (dimension) | "boundaries / what's out of scope" |
+| "criteria" (dimension) | "how we'll know it's done" |
+| "context" (dimension) | "how it fits with existing code" |
 
 ### Rules
 
 1. **Short sentences.** One idea per sentence. Max ~20 words each.
-2. **No jargon.** Replace every technical term with an everyday word. If you must use a technical term (e.g., "API"), explain it in parentheses: "API (프로그램끼리 대화하는 방법)".
-3. **Show progress as a percentage with feeling.** Instead of "Ambiguity: 30%", say "아이디어의 70%가 명확해졌어요! 점점 선명해지고 있어요." Use the score table for precision (the user can read it), but add a one-sentence plain-language summary.
-4. **Explain WHY each question matters.** Before asking, say what you'll learn from the answer and how it helps. Example: "이 질문에 답해주시면, 어떤 기기에서 작동해야 하는지 확실해져요."
-5. **Use analogies.** "이건 레고로 집을 짓는 것과 같아요 — 먼저 기초를 단단히 해야 해요."
-6. **Be friendly and encouraging.** "좋은 답변이에요!", "그렇군요, 이제 이해가 됐어요.", "거의 다 왔어요!"
-7. **Respect the user's language.** If the user speaks Korean, speak Korean. If English, speak English. Match their formality level. The plain-language rules above apply in whatever language you use.
+2. **No jargon.** Replace every technical term with an everyday word. If you must use a technical term (e.g., "API"), explain it in parentheses: "API (how programs talk to each other)".
+3. **Show progress as a percentage with feeling.** Instead of "Ambiguity: 30%", say "About 70% of your idea is clear now! It's getting sharper." Use the score table for precision (the user can read it), but add a one-sentence plain-language summary.
+4. **Explain WHY each question matters.** Before asking, say what you'll learn from the answer and how it helps. Example: "If you answer this, I'll know exactly which devices it needs to work on."
+5. **Use analogies.** "This is like building a house out of Lego — you have to make the foundation solid first."
+6. **Be friendly and encouraging.** "Great answer!", "Ah, I see — that makes sense now.", "Almost there!"
+7. **Respect the user's language.** This rule is authoritative; the Execution Policy and Phase 0 defer to it. The plain-language rules above apply in whatever language you use.
+   - **Detect & default.** Detect the user's language from their messages and reply in that same language. Default to English only before the first user message.
+   - **Translate naturally.** The English user-facing templates are the source of truth for content. Translate them naturally — preserve meaning, tone, and every required element, but use idiomatic target-language phrasing. Literal word-for-word translation is not required.
+   - **Preserve byte-for-byte.** Operators, braces, placeholders (`{name}`), JSON keys, runtime field names, and structural syntax (ternary `? :`, concatenation `+`) stay unchanged. Natural-language string *literals* inside expressions (e.g. the quoted branches of a ternary) translate. Code blocks containing oracle prompts, JSON schemas, runtime input/output contracts, spec templates, or config examples stay unchanged entirely except where prose placeholders appear inside them.
+   - **Question tool JSON.** Keys and schema stay English; `header`/`question`/`label`/`description` string values translate.
+   - **Code-fence taxonomy.** Each fenced block in this skill is one of: (1) user-facing chat text or `question` tool JSON example → translate per above; (2) oracle prompt (labeled "Dispatch `oracle` with...") → preserve; (3) runtime JSON input/output schema → preserve; (4) final spec template (Phase 3 Step 3) → preserve markdown structure, metadata field names, and code; translate prose content of Goal/Constraints/Non-Goals/Acceptance Criteria/Technical Context; (5) configuration JSON example → preserve.
+   - **Control-flow phrases.** Exit/stop/cancel detection (referenced in Phase 2 Step 5, Phase 3 Step 5, and Escalation) is semantic. Match phrases like "enough", "let's go", "build it", "stop", "cancel", "abort" by semantic equivalent in the user's language, not literal English strings.
+   - **Pluralization & numbers.** Render counts in the target language's grammatical form (e.g. "1 main part" / "2 main parts" / Russian 1/2-4/5+ forms / Arabic dual). Do not use the English `(s)` hack.
+   - **Mask runtime labels.** When interpolating a runtime value into prose, map it to plain language using the Internal vs user-facing table above (e.g. `{target_dimension}`="goal" → "what we're building", `{target_component_name}` → the user's own component label, `globalAmbiguity` → the percentage). Never expose raw field names to the user.
+   - **Formality.** Match the user's formality level. Raise the register for Japanese *keigo*, French *vous*, Korean *jondaetmal* — even though the English templates are casual.
+   - **RTL languages.** For Arabic, Hebrew, etc., adapt punctuation and prose layout per locale conventions. Score tables (Rule 8) stay LTR technical; add an RTL plain-language summary alongside. Wrap mixed-direction runs (LTR placeholders/code inside RTL prose) in Unicode bidi marks when needed for clean rendering.
 8. **Score tables stay technical** (they're for precision), but always add a plain-language summary line below them.
 
 ## Runtime Contract (authoritative)
@@ -107,7 +117,7 @@ Complete this before anything else — before initialization, before the first q
 We'll keep going until your idea is about {percent}% clear. Let's start!
 ```
 
-Write in the user's language (EN canonical shown). The internal threshold value, source, and clamp status are recorded in the transcript but never shown to the user.
+Write this line in the user's language per Communication Style Rule 7. The internal threshold value, source, and clamp status are recorded in the transcript but never shown to the user.
 
 5. Carry the threshold forward mechanically through every step. Do not hardcode. Pass it as the `threshold` field of every `scorer.mjs` invocation.
 
@@ -115,7 +125,7 @@ Write in the user's language (EN canonical shown). The internal threshold value,
 
 ## Phase 1: Initialize
 
-1. **Validate and parse the user's idea** from the skill arguments. If arguments are empty or whitespace-only, emit `ULW Interview: no idea provided. Re-invoke with your idea as the argument.` and STOP. Do not enter Round 0.
+1. **Validate and parse the user's idea** from the skill arguments. If arguments are empty or whitespace-only, emit `ULW Interview: no idea provided. Re-invoke with your idea as the argument.` (translated into the user's detected language per Rule 7, when the invoking message reveals one) and STOP. Do not enter Round 0.
 
 2. **Detect brownfield vs greenfield:**
    - Dispatch `explore` to check if cwd has existing source code relevant to the idea.
@@ -131,12 +141,6 @@ Let's figure out exactly what you want to build!
 
 I'll ask questions one at a time. After each answer, I'll show you how clear things are getting.
 We'll keep going until your idea is about {percent}% clear.
-
-**Your idea:** "{initial_idea}"
-**Starting from:** {"scratch" if greenfield | "existing code" if brownfield}
-**Clarity:** 0% (just starting!)
-
-Let's figure out exactly what you want to build. I'll ask questions one at a time, and after each answer I'll show you how clear things are getting. We'll keep going until your idea is about {percent}% clear.
 
 **Your idea:** "{initial_idea}"
 **Project type:** {greenfield→"starting from scratch" | brownfield→"adding to existing code"}
@@ -157,16 +161,14 @@ Run this gate exactly once after Phase 1 initialization and before any Phase 2 a
 
 Chat text (written before the tool call):
 ```
-제가 이해한 큰 그림이에요:
+Here's the big picture as I understand it:
 
-{N}개의 주요 부분으로 나뉘는 것 같아요:
+It seems to break down like this:
 1. {component_name}: {one_sentence_plain_description}
 2. ...
 
-이해가 맞나요?
+Does this look right?
 ```
-
-> **EN canonical:** "Here's the big picture as I understand it: {N} main part(s): 1. {name}: {desc}. Does this look right?" Always write in the user's language; use the EN canonical as the source of truth for content.
 
 Then call the `question` tool:
 ```json
@@ -186,7 +188,7 @@ The tool auto-adds a free-text option, so the user can always type a custom resp
 
 3. **Lock topology** after the answer. Carry the confirmed component list through Phase 2 scoring. If the user confirms one component, Phase 2 proceeds normally. If multiple components are confirmed, Phase 2 must ask follow-up questions until every active component has sufficient goal/constraint/criteria clarity.
 
-4. **Topology refusal fallback.** If the user explicitly refuses to confirm any topology (says "I don't know" / "you decide" / "whatever you think" on **two consecutive** prompts), the agent falls back to a single-component topology covering the entire idea, announces to the user: `제가 전체를 하나로 다루겠습니다.` (EN: "I'll treat this as one big piece for now."), and continues. Note the fallback in the transcript (internal) and resume normal targeting in Round 0.5.
+4. **Topology refusal fallback.** If the user explicitly refuses to confirm any topology (says "I don't know" / "you decide" / "whatever you think" on **two consecutive** prompts), the agent falls back to a single-component topology covering the entire idea, announces to the user: `No problem — I'll treat this as one big piece for now.`, and continues. Note the fallback in the transcript (internal) and resume normal targeting in Round 0.5.
 
 5. **Topology reopen protocol (trigger D).** If a Phase 2 answer fires trigger D — scope expansion — the new entity is added to the active topology. Run Round 0.5 initial scoring for the new entity (below). If active components exceed 6 after addition, ask the user to merge or defer before continuing Phase 2.
 
@@ -200,17 +202,15 @@ Run this exactly once after Round 0 topology lock, BEFORE Phase 2 Round 1. Witho
 4. Announce to the user:
 
 ```
-일단 지금까지 들은 걸로 정리해봤어요!
+Here's what I've gathered so far!
 
-아이디어가 {N}개 부분으로 나뉘는 것 같아요:
+Your idea seems to break down like this:
 1. {component_name}: {one_sentence_plain_description}
 2. ...
 
-지금 아이디어의 {round((1 - globalAmbiguity) * 100)}%는 명확해요. ({round(globalAmbiguity * 100)}%는 아직 헷갈려요)
-제일 먼저 명확하게 만들 부분은 '{scorerOutput.nextTarget.component}'이에요.
+About {round((1 - globalAmbiguity) * 100)}% of your idea is clear now — it's starting to take shape!
+We'll begin by making the '{target_component_name}' part clearer.
 ```
-
-> **EN canonical:** "Here's what I've gathered so far! Your idea has {N} main part(s): 1. {name}: {desc}. About {round((1 - globalAmbiguity) * 100)}% is clear right now. We'll start with '{component}'." Write in the user's language; this EN version is the source of truth for content.
 
 5. Proceed to Phase 2 Round 1.
 
@@ -245,13 +245,11 @@ Write the round context as chat text, then ask the actual question via the `ques
 
 **Chat text** (written before the tool call):
 ```
-지금 아이디어의 {round((1 - score) * 100)}%는 명확해요. ({round(score * 100)}%는 아직 헷갈려요)
+About {round((1 - score) * 100)}% of your idea is clear now. ({round(score * 100)}% is still fuzzy.)
 
-'{target_component_name}' 부분에서 '{target_dimension}'이(가) 아직 불명확해요.
+The '{target_component_name}' part still needs a bit more clarity.
 {one-sentence plain-language explanation of why this matters}
 ```
-
-> **EN canonical:** "About {round((1 - score) * 100)}% of your idea is clear now. ({round(score * 100)}% is still fuzzy.) The '{component}' part needs clarity on '{dimension}'. {why it matters}"
 
 > **Percent convention:** `score` and `globalAmbiguity` are decimals 0.0–1.0. Display `clarityPercent = round((1 - score) * 100)` and `unclearPercent = round(score * 100)`. Never do `{100 - score}` — that gives 99.55 for score=0.45.
 
@@ -271,7 +269,7 @@ Then call the `question` tool:
 ```
 
 **Rules:**
-- The `header` must be short (max 30 chars): `Question {n}` (EN) or equivalent in user's language. Plain and simple — no component/dimension labels.
+- The `header` must be short (max 30 chars): `Question {n}` or equivalent in user's language. Plain and simple — no component/dimension labels.
 - The `question` field carries the actual question — keep it to one or two sentences in plain language.
 - Provide 2-4 contextually relevant options. The tool auto-adds free-text, so users can always type their own.
 - If `forceUserQuestion: true` (dialectic rhythm guard), still use the `question` tool but with minimal options — the point is to force a direct user response.
@@ -374,7 +372,7 @@ Brownfield adds a 15% Context Clarity dimension because safely modifying existin
 After scoring, show the user:
 
 ```
-{n}번째 질문 완료!
+Question {n} done!
 
 (Score table — for precision, stays technical)
 | Dimension | Score | Weight | Weighted | Gap |
@@ -385,14 +383,13 @@ After scoring, show the user:
 | Context (brownfield) | {s} | {w} | {s*w} | {gap or "✓"} |
 | **Clarity** | | | **{round((1 - score) * 100)}% clear** ({round((1 - prior) * 100)}% → {round((1 - score) * 100)}% {↑|↓|flat}) | |
 
-**{score <= threshold ? "DONE" : "Next"}:** {score <= threshold ? "아이디어가 충분히 명확해졌어요! 스펙을 만들어볼게요." : "다음: '" + scorerOutput.nextTarget.component + "' 부분에서 '" + scorerOutput.nextTarget.dimension + "'을(를) 더 명확하게 해볼게요."}
+**{score <= threshold ? "Ready" : "Next"}:** {score <= threshold ? "Your idea is clear enough! Let me draft the spec." : "Next, let's make the '" + target_component_name + "' part clearer."}
 
 > When score <= threshold, do NOT show a "next question" line — show the ready message only. When not ready, show the next target only, no ready message.
 
-> **EN canonical:** "Question {n} done! About {round((1 - score) * 100)}% clear now. Next: the '{component}' part needs '{dimension}'." Always write in the user's language.
 ```
 
-> **Plain-language summary (always add below the table):** Write 1-2 sentences in the user's language explaining what the scores mean. Example: "'목표'는 이제 확실해졌는데, '어디까지 할 건지'는 아직 조금 헷갈려요. 다음 질문에서 그 부분을 명확하게 해볼게요."
+> **Plain-language summary (always add below the table):** Write 1-2 sentences in the user's language explaining what the scores mean. Example: "'Goal' is solid now, but 'boundaries' is still a bit fuzzy. The next question will clarify that part."
 
 ### Step 4b: Lateral Review Panel (milestone-triggered)
 
@@ -431,7 +428,7 @@ Dispatch each persona as a separate `oracle` call with its own copy of the promp
 ### Step 5: Check Limits
 
 - **Round 3+:** Allow early exit if user says "enough", "let's go", "build it". **High-ambiguity early exit:** if `globalAmbiguity > threshold + 0.20` at the moment of early exit, emit an **Incomplete Spec Report** (Phase 3 Step 5) instead of a normal spec — the closure guard cannot rescue this much ambiguity.
-- **Round 10:** Soft warning — "We're at 10 rounds. Current ambiguity: {score}%. Continue or proceed with current clarity?"
+- **Round 10:** Soft warning — "We're at 10 rounds. About {round((1 - score) * 100)}% is clear right now. Keep going, or use what we have?"
 - **Round 20:** Hard cap — "Maximum interview rounds reached." Round 0 and Round 0.5 do NOT count toward this cap; it counts Phase 2 rounds only.
 - **All dimensions of all components ≥ 0.9 AND threshold met:** Skip to Phase 3. (The scorer's `skipToSpec` flag fires only when both conditions hold — this resolves the prior contradiction where 0.9 dims at threshold 0.05 produced ambiguity 0.10.)
 - **Precedence on conflict:** Hard cap > closure guard. If Round 20 is reached and the closure guard rejects, emit an Incomplete Spec Report (see Phase 3 Step 5) and stop — do not loop back to Phase 2.
@@ -446,7 +443,7 @@ When ambiguity ≤ threshold (or hard cap / early exit):
 
 Chat text:
 ```
-**한 줄 요약:** {one-sentence goal}
+**One-line summary:** {one-sentence goal}
 ```
 
 Then call the `question` tool:
@@ -458,12 +455,12 @@ Then call the `question` tool:
     "options": [
       { "label": "Looks good, let's go!", "description": "This captures what I want" },
       { "label": "Adjust wording", "description": "The goal is right but the phrasing needs work" },
-      { "label": "Missing scope", "description": "The goal leaves something out" }
+      { "label": "Something's missing", "description": "The goal leaves something out" }
     ]
   }]
 }
 ```
-On "Adjust wording" or "Missing scope", collect the correction, route it back through Phase 2 scoring (a correction can change ambiguity), and re-run both gates. Cap at two loops; if alignment is not reached, return to Phase 2.
+On "Adjust wording" or "Something's missing", collect the correction, route it back through Phase 2 scoring (a correction can change ambiguity), and re-run both gates. Cap at two loops; if alignment is not reached, return to Phase 2.
 
 
 3. **Generate the specification** from the full interview transcript. Write it to `.omo/specs/ulw-interview-{slug}.md` using the `write` tool.
@@ -475,7 +472,7 @@ On "Adjust wording" or "Missing scope", collect the correction, route it back th
 
 ## Metadata
 - Rounds: {count}
-- Final Ambiguity: {score}%
+- Still unclear: {score}%
 - Type: greenfield | brownfield
 - Threshold: {threshold}
 - Generated: {timestamp}
@@ -487,7 +484,7 @@ On "Adjust wording" or "Missing scope", collect the correction, route it back th
 | Constraint Clarity | {s} | {w} | {s*w} |
 | Success Criteria | {s} | {w} | {s*w} |
 | Context Clarity | {s} | {w} | {s*w} |
-| **Ambiguity** | | | **{1-total}** |
+| **Still unclear** | | | **{1-total}** |
 
 ## Goal
 {crystal-clear goal statement derived from interview}
@@ -514,7 +511,7 @@ On "Adjust wording" or "Missing scope", collect the correction, route it back th
 ### Round 1
 **Q:** {question}
 **A:** {answer}
-**Ambiguity:** {score}%
+**Still unclear:** {score}%
 
 ...
 
@@ -525,7 +522,7 @@ On "Adjust wording" or "Missing scope", collect the correction, route it back th
 
 ## Phase 3 Step 5: Summary So Far (when interview stops early)
 
-> **Internal name:** Incomplete Spec Report. **User-facing name:** "지금까지 정리" (EN: "Summary so far"). Never say "Incomplete Spec Report" to the user.
+> **Internal name:** Incomplete Spec Report. **User-facing name:** "Summary so far". Never say "Incomplete Spec Report" to the user.
 
 Emit this INSTEAD of a normal spec when:
 - Round 20 hard cap reached AND closure guard rejects, OR
