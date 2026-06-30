@@ -44,6 +44,7 @@ const THRESHOLD_MAX = 0.30;          // inclusive upper bound for threshold
  * @property {number} [currentRound]        // 1-based Phase 2 round number
  * @property {Trigger[]} [triggers]
  * @property {boolean} [degraded]           // true if validation fallback was used
+ * @property {boolean} [ontologyConverged]
  */
 
 function readInput() {
@@ -348,6 +349,7 @@ function main() {
   const resolvedWithoutUser = input.lastRoundResolvedWithoutUser === true;
   const streakCounter = resolvedWithoutUser ? priorStreak + 1 : 0;
   const forceUserQuestion = streakCounter >= 3;
+  const ontologyConverged = input.ontologyConverged === true;
 
   // 14. canonical next target (deterministic — removes LLM tie-break divergence)
   // Rule: pick the component with the HIGHEST ambiguity (worst); within that component,
@@ -397,6 +399,7 @@ function main() {
     degraded: input.degraded === true,
     currentRound,
     triggerDelta: TRIGGER_DELTA,
+    ontologyConverged,
   };
 
   process.stdout.write(JSON.stringify(output, null, 2) + '\n');

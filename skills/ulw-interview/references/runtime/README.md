@@ -92,9 +92,12 @@ empty). Scores are clamped to `[0,1]`. Unknown fields are tolerated.
   "validationScoreClamped": false,                 // optional, propagated from validate.mjs
   "streakCounter": 0,                              // optional, dialectic rhythm guard state
   "lastRoundResolvedWithoutUser": false,           // optional, increments streak when true
-  "degraded": false                                // optional, set when validation fallback was used
+  "degraded": false,                               // optional, set when validation fallback was used
+  "ontologyConverged": false                       // optional, advisory only, does not affect nextTarget
 }
 ```
+
+`ontologyConverged` defaults to `false`.
 
 **Output** (stdout, exit 0):
 ```json
@@ -131,6 +134,22 @@ empty). Scores are clamped to `[0,1]`. Unknown fields are tolerated.
 On schema violation (exit 1, stderr message): the LLM treats this as a
 programmer error in the calling code, not an oracle failure. Re-dispatch is
 not appropriate — fix the calling code.
+
+## factsLedger.mjs
+
+Append-only event-log for established facts, disputes, and supersedes.
+
+**CLI:** `node factsLedger.mjs <command> [--interview-id ID] [options]`
+
+**Commands:** `append`, `dispute`, `supersede`, `queryDisputed`, `list`
+
+**State:** `.omo/state/ulw-interview-facts-{interview_id}.json` (per-interview isolation)
+
+Entries are immutable. Disputes and supersedes append new entries instead of modifying the original fact.
+
+Single-writer is assumed. The script uses a lock file with 5 minute stale detection.
+
+Corrupt state exits 1. Recover with `--reset`.
 
 ## Authoritative constants (do not duplicate in prose)
 
@@ -179,7 +198,7 @@ The runtime is deliberately narrow. The LLM continues to own:
 - Topology reopen decision when trigger D fires (the scorer applies the delta;
   the LLM decides whether to ask the user to merge/defer if > 6 components)
 - Lateral panel dispatch (subject to `nextPanelEligible` and the per-interview
-  panel ceiling from `omo.ulwInterview.panelCeiling`, default 20)
+  panel ceiling from `omo.ulwInterview.panelCeiling`, default 30)
 - Closure guard judgment (whether a "material gap" exists; the runtime only
   reports `ready` mathematically)
 - Phase 3 restate gate and incomplete-spec-report decision

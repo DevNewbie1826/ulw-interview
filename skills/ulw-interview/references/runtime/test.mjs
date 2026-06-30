@@ -2,15 +2,17 @@
 // Inline tests for scorer.mjs and validate.mjs. No framework, stdlib only.
 // Run: node references/runtime/test.mjs
 
-import { execFileSync } from 'node:child_process';
 import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCORER = join(__dirname, 'scorer.mjs');
 const VALIDATE = join(__dirname, 'validate.mjs');
+const CONVERGENCE = join(__dirname, 'convergence.mjs');
 
 function runScript(scriptPath, stdin) {
   const r = spawnSync('node', [scriptPath], { input: stdin, encoding: 'utf8' });
@@ -158,6 +160,8 @@ test('no type, no CLI override → ok:false (do not silently default)', () => {
 
 console.log('\n[scorer.mjs]');
 
+console.log('\n[scorer.mjs advisory]');
+
 const GREENFIELD_READY = {
   threshold: 0.05,
   type: 'greenfield',
@@ -173,6 +177,24 @@ const GREENFIELD_NOT_READY = {
     { name: 'API', scores: { goal: 0.5, constraints: 0.5, criteria: 0.5 } },
   ],
 };
+
+test('ontologyConverged=true → output passes through true', () => {
+  const input = {
+    ...GREENFIELD_READY,
+    ontologyConverged: true,
+  };
+  const r = runScript(SCORER, JSON.stringify(input));
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.ontologyConverged, true);
+});
+
+test('ontologyConverged missing → output defaults false', () => {
+  const r = runScript(SCORER, JSON.stringify(GREENFIELD_READY));
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.ontologyConverged, false);
+});
 
 test('greenfield all-0.95 → ready:true', () => {
   const r = runScript(SCORER, JSON.stringify(GREENFIELD_READY));
@@ -627,6 +649,540 @@ test('pipeline: brownfield cannot reach 0.05 with context=0', () => {
   const sOut = JSON.parse(s.stdout);
   assert.equal(sOut.ready, false, 'brownfield needs context ≥ ~0.667 even with perfect others');
   assert.ok(sOut.globalAmbiguity > 0.05);
+});
+
+// [convergence.mjs]
+
+console.log('\n[convergence.mjs]');
+
+test('empty slotSet → zeroed stability payload', () => {
+  const input = JSON.stringify({
+    slotSet: [],
+    priorSnapshots: [],
+  });
+  const r = runScript(CONVERGENCE, input);
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.deepEqual(out, {
+    stability_ratio: 0,
+    converged: false,
+    stable: 0,
+    changed: 0,
+    new: 0,
+    removed: 0,
+    total: 0,
+  });
+});
+
+test('identical slotSet across two rounds → ratio 1.0 and converged', () => {
+  const slotSet = [{ name: 'User', type: 'core domain', fields: ['id', 'email'] }];
+  const input = JSON.stringify({
+    slotSet,
+    priorSnapshots: [slotSet, slotSet],
+  });
+  const r = runScript(CONVERGENCE, input);
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.stability_ratio, 1.0);
+  assert.equal(out.converged, true);
+  assert.equal(out.stable, 1);
+  assert.equal(out.changed, 0);
+  assert.equal(out.new, 0);
+  assert.equal(out.removed, 0);
+  assert.equal(out.total, 1);
+});
+
+test('50% name change with same type and ≥50% field overlap counts as changed', () => {
+  const input = JSON.stringify({
+    slotSet: [{ name: 'Account', type: 'core domain', fields: ['id', 'email'] }],
+    priorSnapshots: [[{ name: 'User', type: 'core domain', fields: ['id', 'email'] }], [{ name: 'User', type: 'core domain', fields: ['id', 'email'] }]],
+  });
+  const r = runScript(CONVERGENCE, input);
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.stability_ratio, (out.stable + out.changed) / out.total);
+  assert.equal(out.stable, 0);
+  assert.equal(out.changed, 1);
+  assert.equal(out.new, 0);
+  assert.equal(out.removed, 0);
+  assert.equal(out.total, 1);
+});
+
+test('priorSnapshots.length < 2 → convergence is not yet available', () => {
+  const input = JSON.stringify({
+    slotSet: [{ name: 'User', type: 'core domain', fields: ['id', 'email'] }],
+    priorSnapshots: [[{ name: 'User', type: 'core domain', fields: ['id', 'email'] }]],
+  });
+  const r = runScript(CONVERGENCE, input);
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.converged, false);
+  assert.equal(out.stability_ratio, null);
+});
+
+test('same name but different type counts as new plus removed', () => {
+  const input = JSON.stringify({
+    slotSet: [{ name: 'User', type: 'product', fields: ['id', 'email'] }],
+    priorSnapshots: [[{ name: 'User', type: 'core domain', fields: ['id', 'email'] }], [{ name: 'User', type: 'core domain', fields: ['id', 'email'] }]],
+  });
+  const r = runScript(CONVERGENCE, input);
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.stability_ratio, 0);
+  assert.equal(out.stable, 0);
+  assert.equal(out.changed, 0);
+  assert.equal(out.new, 1);
+  assert.equal(out.removed, 1);
+  assert.equal(out.total, 1);
+});
+
+test('all new entities → zero ratio with all current counted as new', () => {
+  const input = JSON.stringify({
+    slotSet: [
+      { name: 'Billing', type: 'core domain', fields: ['id'] },
+      { name: 'Invoice', type: 'core domain', fields: ['id', 'amount'] },
+    ],
+    priorSnapshots: [[{ name: 'User', type: 'core domain', fields: ['id', 'email'] }], [{ name: 'User', type: 'core domain', fields: ['id', 'email'] }]],
+  });
+  const r = runScript(CONVERGENCE, input);
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.stability_ratio, 0);
+  assert.equal(out.new, 2);
+  assert.equal(out.stable, 0);
+  assert.equal(out.changed, 0);
+  assert.equal(out.removed, 1);
+  assert.equal(out.total, 2);
+});
+
+test('hash stays deterministic for the same input', () => {
+  const input = JSON.stringify({
+    slotSet: [{ name: 'User', type: 'core domain', fields: ['email', 'id'] }],
+    priorSnapshots: [[{ name: 'User', type: 'core domain', fields: ['id', 'email'] }], [{ name: 'User', type: 'core domain', fields: ['id', 'email'] }]],
+  });
+  const first = runScript(CONVERGENCE, input);
+  const second = runScript(CONVERGENCE, input);
+  assert.equal(first.status, 0);
+  assert.equal(second.status, 0);
+  const firstOut = JSON.parse(first.stdout);
+  const secondOut = JSON.parse(second.stdout);
+  assert.equal(firstOut.hash, secondOut.hash);
+});
+
+test('malformed JSON stdin → exit 1 and Invalid JSON on stderr', () => {
+  const r = runScript(CONVERGENCE, '{not json');
+  assert.equal(r.status, 1);
+  assert.notEqual(r.stderr.trim(), '');
+  assert.match(r.stderr, /Invalid JSON/);
+});
+
+// ---------- refineGate.mjs ----------
+
+console.log('\n[refineGate.mjs]');
+
+const runtimeDir = __dirname;
+
+test('delta=0.02 and clamped=true → shouldRefine true for goal', () => {
+  const r = spawnSync('node', ['refineGate.mjs'], {
+    input: JSON.stringify({
+      priorScores: { goal: 0.8 },
+      currentScores: { goal: 0.82 },
+      validationScoreClamped: true,
+      targetedDim: 'goal',
+    }),
+    cwd: runtimeDir,
+    encoding: 'utf8',
+  });
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.deepEqual(out, { shouldRefine: true, reason: 'low_delta_and_clamped', target: 'goal' });
+});
+
+test('delta=0.10 and clamped=true → shouldRefine false at threshold', () => {
+  const r = spawnSync('node', ['refineGate.mjs'], {
+    input: JSON.stringify({
+      priorScores: { goal: 0.8 },
+      currentScores: { goal: 0.9 },
+      validationScoreClamped: true,
+      targetedDim: 'goal',
+    }),
+    cwd: runtimeDir,
+    encoding: 'utf8',
+  });
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.deepEqual(out, { shouldRefine: false, reason: 'delta_at_or_above_threshold', target: null });
+});
+
+test('delta=0.02 and clamped=false → shouldRefine false when not clamped', () => {
+  const r = spawnSync('node', ['refineGate.mjs'], {
+    input: JSON.stringify({
+      priorScores: { goal: 0.8 },
+      currentScores: { goal: 0.82 },
+      validationScoreClamped: false,
+      targetedDim: 'goal',
+    }),
+    cwd: runtimeDir,
+    encoding: 'utf8',
+  });
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.deepEqual(out, { shouldRefine: false, reason: 'not_clamped', target: null });
+});
+
+test('delta=0.05 boundary and clamped=true → strict less-than keeps false', () => {
+  const r = spawnSync('node', ['refineGate.mjs'], {
+    input: JSON.stringify({
+      priorScores: { goal: 0.8 },
+      currentScores: { goal: 0.85 },
+      validationScoreClamped: true,
+      targetedDim: 'goal',
+    }),
+    cwd: runtimeDir,
+    encoding: 'utf8',
+  });
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.deepEqual(out, { shouldRefine: false, reason: 'delta_at_or_above_threshold', target: null });
+});
+
+test('cold-start with priorScores=null exits cleanly with false', () => {
+  const r = spawnSync('node', ['refineGate.mjs'], {
+    input: JSON.stringify({
+      priorScores: null,
+      currentScores: { goal: 0.82 },
+      validationScoreClamped: true,
+      targetedDim: 'goal',
+    }),
+    cwd: runtimeDir,
+    encoding: 'utf8',
+  });
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.deepEqual(out, { shouldRefine: false, reason: 'cold_start', target: null });
+});
+
+test('missing targeted dimension returns false with missing_dim', () => {
+  const r = spawnSync('node', ['refineGate.mjs'], {
+    input: JSON.stringify({
+      priorScores: { goal: 0.8 },
+      currentScores: { goal: 0.82 },
+      validationScoreClamped: true,
+      targetedDim: 'constraints',
+    }),
+    cwd: runtimeDir,
+    encoding: 'utf8',
+  });
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.deepEqual(out, { shouldRefine: false, reason: 'missing_dim', target: null });
+});
+
+test('malformed JSON exits 1 with stderr', () => {
+  const r = spawnSync('node', ['refineGate.mjs'], {
+    input: 'not valid json{{',
+    cwd: runtimeDir,
+    encoding: 'utf8',
+  });
+  assert.equal(r.status, 1);
+  assert.notEqual(r.stderr.length, 0);
+  assert.match(r.stderr, /Invalid JSON/);
+});
+
+// ---------- factsLedger.mjs ----------
+
+console.log('\n[factsLedger.mjs]');
+
+const FACTS_LEDGER_SCRIPT = join(__dirname, 'factsLedger.mjs');
+
+function makeFactsLedgerSandbox(testName) {
+  const cwd = mkdtempSync(join(tmpdir(), `ulw-facts-${testName}-`));
+  const interviewId = `test-${testName}`;
+  const stateDir = join(cwd, '.omo', 'state');
+  const statePath = join(stateDir, `ulw-interview-facts-${interviewId}.json`);
+  const lockPath = `${statePath}.lock`;
+
+  mkdirSync(stateDir, { recursive: true });
+
+  return {
+    cleanup() {
+      try {
+        unlinkSync(statePath);
+      } catch {
+        // nothing to clean up
+      }
+
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        // nothing to clean up
+      }
+
+      rmSync(cwd, { recursive: true, force: true });
+    },
+    cwd,
+    interviewId,
+    lockPath,
+    statePath,
+  };
+}
+
+function runFactsLedger(args, sandbox, input) {
+  return spawnSync('node', [FACTS_LEDGER_SCRIPT, ...args, '--interview-id', sandbox.interviewId], {
+    cwd: sandbox.cwd,
+    encoding: 'utf8',
+    input,
+  });
+}
+
+test('append first fact → list length 1 and confirmed', () => {
+  const sandbox = makeFactsLedgerSandbox('append-first-fact');
+
+  try {
+    const append = runFactsLedger(
+      ['append', '--fact-id', 'F1', '--claim', 'test', '--source-round', '1', '--confidence', 'user'],
+      sandbox,
+    );
+    assert.equal(append.status, 0);
+
+    const listed = runFactsLedger(['list'], sandbox);
+    assert.equal(listed.status, 0);
+    const out = JSON.parse(listed.stdout);
+    assert.equal(out.entries.length, 1);
+    assert.equal(out.entries[0].status, 'confirmed');
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('duplicate fact_id append → noop', () => {
+  const sandbox = makeFactsLedgerSandbox('duplicate-fact-id');
+
+  try {
+    const first = runFactsLedger(
+      ['append', '--fact-id', 'F1', '--claim', 'test', '--source-round', '1', '--confidence', 'user'],
+      sandbox,
+    );
+    assert.equal(first.status, 0);
+
+    const duplicate = runFactsLedger(
+      ['append', '--fact-id', 'F1', '--claim', 'test', '--source-round', '1', '--confidence', 'user'],
+      sandbox,
+    );
+    assert.equal(duplicate.status, 0);
+
+    const listed = runFactsLedger(['list'], sandbox);
+    const out = JSON.parse(listed.stdout);
+    assert.equal(out.entries.length, 1);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('queryDisputed on empty ledger → empty disputes', () => {
+  const sandbox = makeFactsLedgerSandbox('empty-query-disputed');
+
+  try {
+    const queried = runFactsLedger(['queryDisputed'], sandbox);
+    assert.equal(queried.status, 0);
+    const out = JSON.parse(queried.stdout);
+    assert.deepEqual(out, { disputes: [] });
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('dispute fact F1 → queryDisputed returns original fact', () => {
+  const sandbox = makeFactsLedgerSandbox('dispute-fact');
+
+  try {
+    const append = runFactsLedger(
+      ['append', '--fact-id', 'F1', '--claim', 'test', '--source-round', '1', '--confidence', 'user'],
+      sandbox,
+    );
+    assert.equal(append.status, 0);
+
+    const disputed = runFactsLedger(['dispute', '--fact-id', 'F1', '--reason', 'contradicts R2'], sandbox);
+    assert.equal(disputed.status, 0);
+
+    const queried = runFactsLedger(['queryDisputed'], sandbox);
+    const out = JSON.parse(queried.stdout);
+    assert.equal(out.disputes.length, 1);
+    assert.equal(out.disputes[0].originalFact.claim, 'test');
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('supersede fact F1 → queryDisputed excludes it and list includes replacement', () => {
+  const sandbox = makeFactsLedgerSandbox('supersede-fact');
+
+  try {
+    const append = runFactsLedger(
+      ['append', '--fact-id', 'F1', '--claim', 'test', '--source-round', '1', '--confidence', 'user'],
+      sandbox,
+    );
+    assert.equal(append.status, 0);
+
+    const disputed = runFactsLedger(['dispute', '--fact-id', 'F1', '--reason', 'contradicts R2'], sandbox);
+    assert.equal(disputed.status, 0);
+
+    const superseded = runFactsLedger(
+      ['supersede', '--fact-id', 'F1', '--claim', 'new text', '--source-round', '3'],
+      sandbox,
+    );
+    assert.equal(superseded.status, 0);
+
+    const queried = runFactsLedger(['queryDisputed'], sandbox);
+    const disputedOut = JSON.parse(queried.stdout);
+    assert.equal(disputedOut.disputes.some((entry) => entry.fact_id === 'F1'), false);
+
+    const listed = runFactsLedger(['list'], sandbox);
+    const listedOut = JSON.parse(listed.stdout);
+    assert.equal(listedOut.entries.some((entry) => entry.claim === 'new text'), true);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('different interview-id → separate state file isolation', () => {
+  const firstSandbox = makeFactsLedgerSandbox('isolation-one');
+  const secondSandbox = makeFactsLedgerSandbox('isolation-two');
+
+  try {
+    const firstAppend = runFactsLedger(
+      ['append', '--fact-id', 'F1', '--claim', 'test', '--source-round', '1', '--confidence', 'user'],
+      firstSandbox,
+    );
+    assert.equal(firstAppend.status, 0);
+
+    const firstList = runFactsLedger(['list'], firstSandbox);
+    const secondList = runFactsLedger(['list'], secondSandbox);
+
+    assert.equal(JSON.parse(firstList.stdout).entries.length, 1);
+    assert.equal(JSON.parse(secondList.stdout).entries.length, 0);
+    assert.notEqual(firstSandbox.statePath, secondSandbox.statePath);
+  } finally {
+    firstSandbox.cleanup();
+    secondSandbox.cleanup();
+  }
+});
+
+test('corrupt state file → exit 1 with corrupted message', () => {
+  const sandbox = makeFactsLedgerSandbox('corrupt-state');
+
+  try {
+    writeFileSync(sandbox.statePath, '{garbage');
+    const listed = runFactsLedger(['list'], sandbox);
+    assert.equal(listed.status, 1);
+    assert.match(listed.stderr, /corrupted/i);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('stale lock file → auto-removes lock and succeeds', () => {
+  const sandbox = makeFactsLedgerSandbox('stale-lock');
+
+  try {
+    writeFileSync(sandbox.lockPath, JSON.stringify({ pid: 12345, timestamp: Date.now() - 6 * 60 * 1000 }));
+    const listed = runFactsLedger(['list'], sandbox);
+    assert.equal(listed.status, 0);
+    const out = JSON.parse(listed.stdout);
+    assert.deepEqual(out.entries, []);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('list on empty ledger → entries array', () => {
+  const sandbox = makeFactsLedgerSandbox('empty-list');
+
+  try {
+    const listed = runFactsLedger(['list'], sandbox);
+    assert.equal(listed.status, 0);
+    assert.deepEqual(JSON.parse(listed.stdout), { entries: [] });
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('malformed JSON stdin → exit 1', () => {
+  const sandbox = makeFactsLedgerSandbox('malformed-stdin');
+
+  try {
+    const listed = runFactsLedger(['list'], sandbox, '{not-json');
+    assert.equal(listed.status, 1);
+    assert.match(listed.stderr, /Invalid JSON/);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+// [coverage gaps]
+
+console.log('\n[coverage gaps]');
+
+test('validate empty stdin → ok:false', () => {
+  const r = spawnSync('node', [VALIDATE], { input: '', encoding: 'utf8' });
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.ok, false);
+  assert.ok(out.errors.includes('empty input'));
+});
+
+test('validate top-level array stdin → ok:false', () => {
+  const r = spawnSync('node', [VALIDATE], { input: '[1,2,3]', encoding: 'utf8' });
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.ok, false);
+  assert.ok(out.errors.includes('top-level value must be a JSON object'));
+});
+
+test('scorer NaN threshold → clamped + flag', () => {
+  const input = {
+    ...GREENFIELD_READY,
+    threshold: Number.NaN,
+  };
+  const r = runScript(SCORER, JSON.stringify(input));
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.thresholdClamped, true);
+});
+
+test('scorer priorPanelRound undefined → cooldown default works', () => {
+  const input = {
+    ...GREENFIELD_READY,
+    currentRound: 3,
+  };
+  const r = runScript(SCORER, JSON.stringify(input));
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.nextPanelEligible, true);
+});
+
+test('validate expected-type=greenfield with brownfield input → ok:true', () => {
+  const input = JSON.stringify({
+    type: 'brownfield',
+    scores: { goal: 0.8, constraints: 0.7, criteria: 0.6, context: 0.5 },
+    weakest_dimension: 'goal',
+    triggers: [],
+  });
+  const r = spawnSync('node', [VALIDATE, '--expected-type=greenfield'], { input, encoding: 'utf8' });
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.ok, true);
+  assert.equal(out.normalized.type, 'greenfield');
+});
+
+test('scorer ontologyConverged missing → false', () => {
+  const input = {
+    ...GREENFIELD_READY,
+  };
+  const r = runScript(SCORER, JSON.stringify(input));
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.ontologyConverged, false);
 });
 
 // ---------- summary ----------
