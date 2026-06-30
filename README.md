@@ -58,7 +58,9 @@ Optional settings in `.omo/settings.json` (project-level):
   "omo": {
     "ulwInterview": {
       "ambiguityThreshold": 0.05,
-      "panelCeiling": 20
+      "roundCap": 30,
+      "softWarningRounds": 15,
+      "panelCeiling": 30
     }
   }
 }
@@ -67,7 +69,9 @@ Optional settings in `.omo/settings.json` (project-level):
 | Key | Default | Range | Notes |
 |---|---|---|---|
 | `ambiguityThreshold` | `0.05` | `(0, 0.30]` | `0.10` recommended for product discovery; `0.05` for safety/compliance. |
-| `panelCeiling` | `20` | positive integer | Total persona-dispatches allowed per interview. |
+| `roundCap` | `30` | positive integer | Maximum Phase 2 rounds. `20` for safety/compliance; `30-40` for product discovery. |
+| `softWarningRounds` | `15` | positive integer | Round for soft warning. Default ~`roundCap / 2`. |
+| `panelCeiling` | `30` | positive integer | Total persona-dispatches allowed per interview. |
 
 ## Repository structure
 

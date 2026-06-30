@@ -100,7 +100,7 @@ All numerical scoring, validation, band classification, stall detection, and tri
 
 **What the LLM still owns:** question generation, topology enumeration, lateral panel dispatch (subject to scorer's `nextPanelEligible` flag and the per-interview panel ceiling), closure judgment, and the restate gate.
 
-**Transcript compression (mandatory above 4000 tokens):** before each oracle scoring dispatch, if the accumulated transcript exceeds 4000 tokens, compress the OLDEST half via a separate oracle call (`Summarize the following interview Q&A rounds in ≤500 tokens, preserving every confirmed decision, every fired trigger, and every score change.`) and replace those rounds in the working transcript with the summary. Keep the last 2 rounds verbatim. This bounds per-round oracle cost growth from O(n²) to O(n) without losing decisions. The full uncompressed transcript is still written to the final spec.
+**Transcript compression (mandatory above 4000 tokens):** before each oracle scoring dispatch, if the accumulated transcript exceeds 4000 tokens, compress the OLDEST half via a separate oracle call (see `references/prompts/oracle-scoring.md` for the compression prompt). Replace those rounds in the working transcript with the summary. Keep the last 2 rounds verbatim. This bounds per-round oracle cost growth from O(n²) to O(n) without losing decisions. The full uncompressed transcript is still written to the final spec.
 
 See `references/runtime/README.md` (in the skill directory) for the full contract.
 
@@ -288,43 +288,21 @@ After receiving the answer, score clarity across all dimensions.
 - **D — scope expansion:** the answer adds a component, entity, constraint, or deliverable not already covered (also fires the topology-reopen protocol from Round 0 Step 5).
 
 When a trigger fires, append it to the `triggers` array passed to `scorer.mjs` with the targeted `component` and `dim`. The runtime applies a fixed -0.15 delta per fired trigger (stacking, floored at 0.0); the weighted formula then raises ambiguity automatically. The LLM never applies penalties by hand.
+When trigger A (direct contradiction) or B (internal inconsistency) fires on an established fact, mark it as disputed: run `node "$RUNTIME_DIR/factsLedger.mjs" dispute --fact-id <fact_id> --reason "<trigger_description>" --interview-id $INTERVIEW_ID`. The original fact entry is NOT modified (event-log model); a new dispute entry is appended.
+
+### Established Facts Maintenance
+
+When the oracle identifies a stable confirmed decision (a fact the user has clearly committed to), append it to the ledger:
+
+```bash
+node "$RUNTIME_DIR/factsLedger.mjs" append --claim "<fact text>" --source-round <N> --confidence <user|explore|oracle|inferred> --fact-id <stable_id> --interview-id $INTERVIEW_ID
+```
+
+The facts ledger uses an **event-log model**: entries are immutable. Disputes (trigger A/B) and supersessions append new entries rather than modifying originals. The closure guard queries `queryDisputed` to block if any unresolved disputes remain.
 
 **Scoring pipeline (mandatory — never compute by hand):**
 
-1. Dispatch `oracle` with the transcript and this prompt:
-
-```
-Given the following interview transcript for a {greenfield|brownfield} project,
-score clarity on each dimension from 0.0 to 1.0.
-
-Original idea: {idea}
-Transcript: {all rounds Q&A}
-Established facts: {confirmed decisions so far}
-Active topology component being scored this round: {component_name}
-
-Score each dimension:
-1. Goal Clarity (0.0-1.0): Is the primary objective unambiguous? Can you state it
-   in one sentence without qualifiers?
-2. Constraint Clarity (0.0-1.0): Are the boundaries, limitations, and non-goals clear?
-3. Success Criteria (0.0-1.0): Could you write a test that verifies success? Are
-   acceptance criteria concrete?
-4. Context Clarity (0.0-1.0): [brownfield only] Do we understand the existing system
-   well enough to modify it safely?
-
-For each dimension provide:
-- score: float (0.0-1.0)
-- justification: one sentence
-- gap: what's still unclear (if score < 0.9)
-
-Also identify:
-- weakest_dimension: the single lowest-confidence dimension this round
-- weakest_dimension_rationale: one sentence explaining why this is the highest-leverage
-  target for the next question
-- triggers: array of {dim, type} where dim is goal|constraints|criteria|context and
-  type is A|B|C|D. Empty array if none fired.
-
-Respond as STRICT JSON only. No prose, no code fences. All scores in [0,1].
-```
+1. Dispatch `oracle` with the transcript and the scoring prompt from `references/prompts/oracle-scoring.md` (read the file, substitute `{idea}`, `{all rounds Q&A}`, `{confirmed decisions so far}`, `{component_name}`, `{greenfield|brownfield}`, then send to oracle).
 
 2. Pipe raw oracle output through `node "$RUNTIME_DIR/validate.mjs" --expected-type=<declaredType>`. The output exposes `scoreClamped`, `clampedFields`. If `ok: false`, re-dispatch once with the `retryHint`. If still failing, fall back to all-scores-0.5, set `degraded: true`, and continue. **Propagate** `scoreClamped` from validate output into the scorer input as `validationScoreClamped` so downstream sees clamping that happened pre-scorer.
 
@@ -351,6 +329,36 @@ Respond as STRICT JSON only. No prose, no code fences. All scores in [0,1].
   "degraded": <true if validation fallback was used>
 }
 ```
+### Step 3.5: Ontology Convergence (GLOBAL)
+
+After scoring, extract the current slot set from the oracle output (entity names, types, fields). Run:
+
+```bash
+node "$RUNTIME_DIR/convergence.mjs"
+```
+
+Pipe stdin: `{slotSet: [{name, type, fields}, ...], priorSnapshots: [state.ontologySnapshots.map(s => s.slotSet)]}`
+
+Append the output to `state.ontologySnapshots` as `{round, slotSet, stability_ratio, converged, hash}`.
+
+**The `converged` boolean from the LAST snapshot should be passed as `ontologyConverged` in the next scorer.mjs input.** This is advisory only and does NOT affect `nextTarget` — it signals to the lateral panel and closure guard that the domain ontology has stabilized.
+
+### Step 3.6: Refine Gate (conditional)
+
+Compare the current round's scores against the previous round to detect low-progress + clamped answers. Run:
+
+```bash
+node "$RUNTIME_DIR/refineGate.mjs"
+```
+
+Pipe stdin: `{priorScores: <previous round scores>, currentScores: <this round scores>, validationScoreClamped: <bool>, targetedDim: <nextTarget.dimension>}`
+
+- If `shouldRefine: true`: the NEXT round's Step 1 should generate a refinement question for `targetedDim` instead of progressing to a new dimension.
+- If `shouldRefine: false`: proceed normally to Step 4.
+
+**Round 0.5 (cold-start) skips this gate** — `refineGate.mjs` returns `{shouldRefine: false, reason: "cold_start"}` when priorScores is null.
+
+After running `convergence.mjs` (Step 3.5, added separately), pass the `converged` boolean from its output as `ontologyConverged: true/false` in the next `scorer.mjs` input. This field is advisory only and does not affect targeting.
 
 4. Pipe through `node "$RUNTIME_DIR/scorer.mjs"`. Read the JSON output. Fields: `globalAmbiguity`, `band`, `bandChanged`, `stallDetected`, `ready`, `skipToSpec`, `nextPanelEligible`, `suppressPanelForOscillation`, `dispatchPanel` (= `nextPanelEligible && !suppressPanelForOscillation && bandChanged`), `coverageGaps`, `thresholdClamped`, `scoreClamped`, `validationScoreClamped`, `negativeAmbiguityClamped`, `streakCounter`, `forceUserQuestion`, `nextTarget` (`{ component, dimension }` — authoritative target; do not recompute).
 
@@ -393,51 +401,28 @@ Question {n} done!
 
 ### Step 4b: Lateral Review Panel (milestone-triggered)
 
-After scoring, check if the ambiguity **milestone band** changed versus the prior round:
+**Full panel protocol (milestone bands, personas, folding, cooldown, ceiling, stall detection, cancellation) is in `references/prompts/lateral-panel.md`.** Read that file before dispatching the panel. Summary:
 
-| Band | Ambiguity |
-|------|-----------|
-| `initial` | > 0.60 |
-| `progress` | 0.60 ≥ a > 0.30 |
-| `refined` | 0.30 ≥ a > threshold |
-| `ready` | ≤ threshold |
-
-A transition occurs whenever the band changes — in either direction, since bidirectional scoring can move it back up. On a transition, convene the panel before generating the next question.
-
-**Personas (dispatch in parallel via `oracle`, independent context each):**
-- `researcher` — surfaces external facts, prior art, and version/compatibility constraints the interview depends on.
-- `contrarian` — challenges the core assumption: "What if the opposite were true? Is this constraint real or habitual?"
-- `simplifier` — probes whether complexity can be removed: "What is the simplest version that is still valuable?"
-- `architect` — only when scope changed (trigger D, new component, ownership change): checks system shape, ownership, and integration impact.
-
-Dispatch each persona as a separate `oracle` call with its own copy of the prompt-safe context (transcript summary + current scores + locked topology) so no persona anchors on another's framing. Ask each for: one concrete blind spot or unsettled decision, 1-3 suggested answer options for the next question, and confidence (high/medium/low).
-
-**Folding findings:** validate each response, then fold concrete findings into the next single user-facing question as 2-3 ranked answer options or one recommended draft. The panel never adds a second question, never mutates requirements, and never marks the interview complete. The one-question-per-round rule stays intact.
-
-**Ontology escalation:** if ambiguity stalls (same score ±0.05 for 3 rounds) or stays > 0.30 after 8 rounds, instruct `contrarian` + `architect` to ask "What IS this, really?" — identify the core entity versus supporting views before returning to feature questions.
-
-**Panel cooldown and ceiling (cost controls):**
-- A panel cannot fire within `panelCooldown` (default 2) rounds of the previous panel. Check `dispatchPanel` (= `nextPanelEligible && !suppressPanelForOscillation && bandChanged`) in the scorer output. If false, skip the panel and note the cooldown, oscillation suppression, or unchanged band in the transcript.
-- Per-interview panel ceiling: 20 persona-dispatches total. Override via `.omo/settings.json` `omo.ulwInterview.panelCeiling`. **Before dispatching:** compute `remaining = panelCeiling - panelDispatchCount`. If `remaining <= 0`, skip the panel entirely. If `remaining < 4` (not enough for all personas), dispatch only the highest-priority personas that fit and note the degradation.
-- Bidirectional band oscillation: the scorer reports `suppressPanelForOscillation: true` when the same band-edge has been crossed 2+ times in the last 4 transitions. When true, the panel is suppressed regardless of cooldown.
-
-**Stall detection (deterministic):** the runtime computes `stallDetected` as a windowed max-min over the last 3 global ambiguities ≤ 0.05. The LLM does not compute this. On `stallDetected: true`, fire ontology escalation.
-
-**Mid-panel cancellation:** if the user says "stop" / "cancel" / "abort" while a panel is mid-flight, abort the panel, discard any partial results, and terminate the interview per the Escalation section.
+- Check if the ambiguity **milestone band** changed versus the prior round. On a transition (either direction), convene the panel.
+- Dispatch `researcher` / `contrarian` / `simplifier` / `architect` (architect only on scope change) as separate `oracle` calls with independent context.
+- Fold concrete findings into the next single user-facing question. The panel never adds a second question or marks the interview complete.
+- Check `dispatchPanel` from scorer output before dispatching. Respect `panelCooldown` (default 2) and per-interview ceiling (default 30, configurable via `omo.ulwInterview.panelCeiling`).
+- On `suppressPanelForOscillation: true` or `stallDetected: true`, follow the escalation protocol in the reference.
+- If the user says stop/cancel/abort mid-panel, abort and terminate per Escalation.
 
 ### Step 5: Check Limits
 
 - **Round 3+:** Allow early exit if user says "enough", "let's go", "build it". **High-ambiguity early exit:** if `globalAmbiguity > threshold + 0.20` at the moment of early exit, emit an **Incomplete Spec Report** (Phase 3 Step 5) instead of a normal spec — the closure guard cannot rescue this much ambiguity.
-- **Round 10:** Soft warning — "We're at 10 rounds. About {round((1 - score) * 100)}% is clear right now. Keep going, or use what we have?"
-- **Round 20:** Hard cap — "Maximum interview rounds reached." Round 0 and Round 0.5 do NOT count toward this cap; it counts Phase 2 rounds only.
+- **Round `{softWarningRounds}` (default 15):** Soft warning — "We're at {softWarningRounds} rounds. About {round((1 - score) * 100)}% is clear right now. Keep going, or use what we have?"
+- **Round `{roundCap}` (default 30):** Hard cap — "Maximum interview rounds reached." Round 0 and Round 0.5 do NOT count toward this cap; it counts Phase 2 rounds only. Configure via `omo.ulwInterview.roundCap`.
 - **All dimensions of all components ≥ 0.9 AND threshold met:** Skip to Phase 3. (The scorer's `skipToSpec` flag fires only when both conditions hold — this resolves the prior contradiction where 0.9 dims at threshold 0.05 produced ambiguity 0.10.)
-- **Precedence on conflict:** Hard cap > closure guard. If Round 20 is reached and the closure guard rejects, emit an Incomplete Spec Report (see Phase 3 Step 5) and stop — do not loop back to Phase 2.
+- **Precedence on conflict:** Hard cap > closure guard. If Round `{roundCap}` is reached and the closure guard rejects, emit an Incomplete Spec Report (see Phase 3 Step 5) and stop — do not loop back to Phase 2.
 
 ## Phase 3: Generate Spec
 
 When ambiguity ≤ threshold (or hard cap / early exit):
 
-1. **Closure / Acceptance Guard.** Precedence: Round 20 hard cap > closure guard > readiness math. Even when scorer reports `ready: true`, do not treat the math as completion. Run an independent readiness audit via `oracle`. **Mechanical coverage check:** read `coverageGaps` from the last scorer output — if it is non-empty, the closure guard REJECTS and re-entry uses `scorerOutput.nextTarget` as the next question target (do not pick a target yourself). Otherwise the oracle audit checks: no unresolved or disputed trigger remains, and no agent-confirmed fact is standing in for user-confirmed truth (route these to the user). If the oracle audit finds a material gap, override the gate to the user — "The math says ready, but I am not accepting it yet because {gap}" — ask the single highest-impact follow-up, and return to Phase 2. **Retry cap:** the closure guard may reject at most 2 times. After the 2nd rejection, OR if Round 20 has been reached, OR if the user invoked early exit with `globalAmbiguity > threshold + 0.20`, emit an **Incomplete Spec Report** (see Phase 3 Step 5) instead of looping. When returning to Phase 2 from the closure guard, the round number CONTINUES (does not reset) and re-entry targets `scorerOutput.nextTarget`.
+1. **Closure / Acceptance Guard.** Precedence: Round `{roundCap}` hard cap > closure guard > readiness math. Even when scorer reports `ready: true`, do not treat the math as completion. Run an independent readiness audit via `oracle`. **Mechanical coverage check:** read `coverageGaps` from the last scorer output — if it is non-empty, the closure guard REJECTS and re-entry uses `scorerOutput.nextTarget` as the next question target (do not pick a target yourself). Otherwise the oracle audit checks: no unresolved or disputed trigger remains, and no agent-confirmed fact is standing in for user-confirmed truth (route these to the user). If the oracle audit finds a material gap, override the gate to the user — "The math says ready, but I am not accepting it yet because {gap}" — ask the single highest-impact follow-up, and return to Phase 2. **Retry cap:** the closure guard may reject at most 2 times. After the 2nd rejection, OR if Round `{roundCap}` has been reached, OR if the user invoked early exit with `globalAmbiguity > threshold + 0.20`, emit an **Incomplete Spec Report** (see Phase 3 Step 5) instead of looping. When returning to Phase 2 from the closure guard, the round number CONTINUES (does not reset) and re-entry targets `scorerOutput.nextTarget`. Additionally, query the established-facts ledger for disputes: run `node "$RUNTIME_DIR/factsLedger.mjs" queryDisputed --interview-id $INTERVIEW_ID`. If the `disputes` array is non-empty, reject closure and return to the disputed fact's `originalFact.source_round` to re-resolve.
 
 2. **Restate gate.** Once closure passes, collapse the agreed answers into ONE sentence goal that covers every active component. Write the goal as chat text, then confirm via the `question` tool:
 
@@ -465,67 +450,44 @@ On "Adjust wording" or "Something's missing", collect the correction, route it b
 
 3. **Generate the specification** from the full interview transcript. Write it to `.omo/specs/ulw-interview-{slug}.md` using the `write` tool.
 
-**Spec structure:**
+**Spec structure:** see `references/prompts/spec-template.md` for the full normal spec template and the Incomplete Spec Report substitutions. Use the `write` tool to write the spec to `.omo/specs/ulw-interview-{slug}.md`.
 
-```markdown
-# Spec: {title}
+4. **Post-spec options.** After writing the spec, present three options via the `question` tool:
 
-## Metadata
-- Rounds: {count}
-- Still unclear: {score}%
-- Type: greenfield | brownfield
-- Threshold: {threshold}
-- Generated: {timestamp}
+Chat text:
+```
+Your spec is ready at `.omo/specs/ulw-interview-{slug}.md`.
 
-## Clarity Breakdown
-| Dimension | Score | Weight | Weighted |
-|-----------|-------|--------|----------|
-| Goal Clarity | {s} | {w} | {s*w} |
-| Constraint Clarity | {s} | {w} | {s*w} |
-| Success Criteria | {s} | {w} | {s*w} |
-| Context Clarity | {s} | {w} | {s*w} |
-| **Still unclear** | | | **{1-total}** |
-
-## Goal
-{crystal-clear goal statement derived from interview}
-
-## Constraints
-- {constraint 1}
-- {constraint 2}
-
-## Non-Goals
-- {explicitly excluded scope 1}
-
-## Acceptance Criteria
-- [ ] {testable criterion 1}
-- [ ] {testable criterion 2}
-
-## Technical Context
-{brownfield: relevant codebase findings from explore}
-{greenfield: technology choices and constraints}
-
-## Interview Transcript
-<details>
-<summary>Full Q&A ({n} rounds)</summary>
-
-### Round 1
-**Q:** {question}
-**A:** {answer}
-**Still unclear:** {score}%
-
-...
-
-</details>
+About {round((1 - globalAmbiguity) * 100)}% clear after {currentRound} rounds.
 ```
 
-4. **Stop.** The spec is the deliverable. Do NOT auto-invoke execution. The user can take the spec to `/ulw-plan` for planning or proceed however they choose.
+Then call the `question` tool:
+```json
+{
+  "questions": [{
+    "header": "Next step",
+    "question": "What would you like to do next?",
+    "options": [
+      { "label": "Start planning", "description": "Continue to /ulw-plan with this spec" },
+      { "label": "Continue interview", "description": "Ask more questions to refine the spec" },
+      { "label": "Done", "description": "Stop here. The spec is saved." }
+    ]
+  }]
+}
+```
+
+On "Start planning": invoke `/ulw-plan` with the spec path `.omo/specs/ulw-interview-{slug}.md` as context. The planning skill will read the spec and build a work plan from it.
+
+On "Continue interview": return to Phase 2. The round number continues (does not reset). The spec file remains; it will be overwritten when the interview completes again.
+
+On "Done": stop. The spec is the deliverable.
 
 ## Phase 3 Step 5: Summary So Far (when interview stops early)
 
 > **Internal name:** Incomplete Spec Report. **User-facing name:** "Summary so far". Never say "Incomplete Spec Report" to the user.
 
 Emit this INSTEAD of a normal spec when:
-- Round 20 hard cap reached AND closure guard rejects, OR
+- Round `{roundCap}` hard cap reached AND closure guard rejects, OR
 - Closure guard rejected 2 times, OR
 - User says "enough" / "let's go" / "build it" early-exit AND `globalAmbiguity > threshold + 0.20` (high-ambiguity early exit), OR
 - User says "stop" / "cancel" / "abort" mid-interview with `globalAmbiguity > threshold`.
@@ -550,6 +512,7 @@ These MUST be initialized at Phase 1 and updated through every round. The runtim
 | `priorAmbiguity` | `null` | Round 0.5, every Phase 2 round |
 | `priorRounds` | `[]` | Every Phase 2 round (append `globalAmbiguity`) |
 | `priorBandHistory` | `[]` | Every Phase 2 round (append `band`) — drives oscillation suppression |
+| `ontologySnapshots` | `[]` | Step 3.5 (append `{round, slotSet, stability_ratio, converged, hash}`) |
 | `scoreStateMatrix` | `{}` (Map: component name → last-known scores) | Round 0.5, every Phase 2 round (current component's scores refreshed) |
 | `priorPanelRound` | `-3` | Every panel dispatch |
 | `panelDispatchCount` | `0` | Every panel dispatch (against the ceiling) |
@@ -557,6 +520,7 @@ These MUST be initialized at Phase 1 and updated through every round. The runtim
 | `streakCounter` | `0` | Dialectic rhythm guard |
 | `degraded` | `false` | Validation fallback |
 | `declaredType` | set in Phase 1 Step 2 | Sticky — drives `validate.mjs --expected-type` |
+| `factsLedgerInterviewId` | derived in Phase 1 from slug | `factsLedger.mjs` state file key |
 | `slug` | derived at Phase 3 from final one-sentence goal | kebab-case, ASCII only, max 60 chars. If `.omo/specs/ulw-interview-{slug}.md` exists, append `-2`, `-3`, … until path is free. |
 | `timestamp` | ISO 8601 UTC at spec write | Phase 3 Step 3 |
 
@@ -569,7 +533,9 @@ Optional settings in `.omo/settings.json`:
   "omo": {
     "ulwInterview": {
       "ambiguityThreshold": 0.05,
-      "panelCeiling": 20
+      "roundCap": 30,
+      "softWarningRounds": 15,
+      "panelCeiling": 30
     }
   }
 }
@@ -578,12 +544,14 @@ Optional settings in `.omo/settings.json`:
 | Key | Default | Valid range | Notes |
 |---|---|---|---|
 | `ambiguityThreshold` | `0.05` | `(1e-6, 0.30]` | Out-of-range values are clamped by `scorer.mjs`. `0.10` recommended for product discovery; `0.05` for safety/compliance. |
-| `panelCeiling` | `20` | positive integer | Total persona-dispatches allowed per interview. After ceiling, panels are skipped. |
+| `roundCap` | `30` | positive integer | Maximum Phase 2 rounds. Round 0 and 0.5 do NOT count. `20` for safety/compliance; `30-40` for product discovery. |
+| `softWarningRounds` | `15` | positive integer | Round number for the soft warning. Default is approximately `roundCap / 2`. |
+| `panelCeiling` | `30` | positive integer | Total persona-dispatches allowed per interview. After ceiling, panels are skipped. |
 
 ## Escalation And Stop Conditions
 
-- **Hard cap at 20 rounds:** Proceed with whatever clarity exists, noting the risk.
-- **Soft warning at 10 rounds:** Offer to continue or proceed.
+- **Hard cap at `{roundCap}` rounds (default 30):** Proceed with whatever clarity exists, noting the risk.
+- **Soft warning at `{softWarningRounds}` rounds (default 15):** Offer to continue or proceed.
 - **Early exit (round 3+):** Allow with warning if ambiguity > threshold.
 - **User says "stop" / "cancel" / "abort":** Stop immediately.
 - **Ambiguity stalls** (`scorer.mjs` reports `stallDetected: true`): Reframe — ask "What IS the core thing here?" before continuing with detail questions. The runtime computes this as windowed max-min over the last 3 global ambiguities ≤ 0.05; the LLM never computes it by hand.
