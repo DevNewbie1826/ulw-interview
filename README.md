@@ -6,8 +6,6 @@ Asks one targeted question at a time, scores clarity across weighted dimensions 
 
 ## Install
 
-### Option A — opencode plugin (opencode native discovery)
-
 Add to your project's `opencode.json` (or `~/.config/opencode/opencode.json` for global):
 
 ```jsonc
@@ -27,47 +25,6 @@ opencode plugin "ulw-interview@git+https://github.com/DevNewbie1826/ulw-intervie
 ```
 
 Restart opencode. The skill is auto-discovered by the native skill system.
-
-### Option B — oh-my-openagent `skill` tool integration
-
-If you use [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent), the `skill` tool has a **separate registry** from opencode native discovery. To make the skill invokable via `skill('ulw-interview')` and slash commands:
-
-1. Clone the skill to the global skills directory:
-
-```bash
-git clone https://github.com/DevNewbie1826/ulw-interview.git /tmp/ulw-interview
-cp -r /tmp/ulw-interview/skills/ulw-interview ~/.config/opencode/skills/ulw-interview
-```
-
-2. Add to `~/.config/opencode/oh-my-openagent.json`:
-
-```jsonc
-{
-  "skills": {
-    "sources": [
-      { "path": "~/.config/opencode/skills", "recursive": true }
-    ]
-  }
-}
-```
-
-Restart opencode. The skill now appears in both native discovery AND the oh-my-openagent `skill` tool.
-
-### Option C — manual (for `--pure` mode or offline)
-
-```bash
-git clone https://github.com/DevNewbie1826/ulw-interview.git ~/.config/opencode/skills/ulw-interview
-```
-
-Then add to `opencode.json`:
-
-```jsonc
-{
-  "skills": {
-    "paths": ["~/.config/opencode/skills/ulw-interview/skills"]
-  }
-}
-```
 
 ## When to use
 
