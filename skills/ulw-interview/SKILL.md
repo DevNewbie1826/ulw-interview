@@ -418,7 +418,7 @@ Dispatch each persona as a separate `oracle` call with its own copy of the promp
 
 **Panel cooldown and ceiling (cost controls):**
 - A panel cannot fire within `panelCooldown` (default 2) rounds of the previous panel. Check `dispatchPanel` (= `nextPanelEligible && !suppressPanelForOscillation && bandChanged`) in the scorer output. If false, skip the panel and note the cooldown, oscillation suppression, or unchanged band in the transcript.
-- Per-interview panel ceiling: 6 persona-dispatches total. Override via `.omo/settings.json` `omo.ulwInterview.panelCeiling`. **Before dispatching:** compute `remaining = panelCeiling - panelDispatchCount`. If `remaining <= 0`, skip the panel entirely. If `remaining < 4` (not enough for all personas), dispatch only the highest-priority personas that fit and note the degradation.
+- Per-interview panel ceiling: 20 persona-dispatches total. Override via `.omo/settings.json` `omo.ulwInterview.panelCeiling`. **Before dispatching:** compute `remaining = panelCeiling - panelDispatchCount`. If `remaining <= 0`, skip the panel entirely. If `remaining < 4` (not enough for all personas), dispatch only the highest-priority personas that fit and note the degradation.
 - Bidirectional band oscillation: the scorer reports `suppressPanelForOscillation: true` when the same band-edge has been crossed 2+ times in the last 4 transitions. When true, the panel is suppressed regardless of cooldown.
 
 **Stall detection (deterministic):** the runtime computes `stallDetected` as a windowed max-min over the last 3 global ambiguities ≤ 0.05. The LLM does not compute this. On `stallDetected: true`, fire ontology escalation.
@@ -569,7 +569,7 @@ Optional settings in `.omo/settings.json`:
   "omo": {
     "ulwInterview": {
       "ambiguityThreshold": 0.05,
-      "panelCeiling": 6
+      "panelCeiling": 20
     }
   }
 }
@@ -578,7 +578,7 @@ Optional settings in `.omo/settings.json`:
 | Key | Default | Valid range | Notes |
 |---|---|---|---|
 | `ambiguityThreshold` | `0.05` | `(1e-6, 0.30]` | Out-of-range values are clamped by `scorer.mjs`. `0.10` recommended for product discovery; `0.05` for safety/compliance. |
-| `panelCeiling` | `6` | positive integer | Total persona-dispatches allowed per interview. After ceiling, panels are skipped. |
+| `panelCeiling` | `20` | positive integer | Total persona-dispatches allowed per interview. After ceiling, panels are skipped. |
 
 ## Escalation And Stop Conditions
 

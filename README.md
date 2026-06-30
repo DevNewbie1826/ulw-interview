@@ -58,7 +58,7 @@ Optional settings in `.omo/settings.json` (project-level):
   "omo": {
     "ulwInterview": {
       "ambiguityThreshold": 0.05,
-      "panelCeiling": 6
+      "panelCeiling": 20
     }
   }
 }
@@ -67,7 +67,7 @@ Optional settings in `.omo/settings.json` (project-level):
 | Key | Default | Range | Notes |
 |---|---|---|---|
 | `ambiguityThreshold` | `0.05` | `(0, 0.30]` | `0.10` recommended for product discovery; `0.05` for safety/compliance. |
-| `panelCeiling` | `6` | positive integer | Total persona-dispatches allowed per interview. |
+| `panelCeiling` | `20` | positive integer | Total persona-dispatches allowed per interview. |
 
 ## Repository structure
 

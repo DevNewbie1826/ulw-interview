@@ -179,7 +179,7 @@ The runtime is deliberately narrow. The LLM continues to own:
 - Topology reopen decision when trigger D fires (the scorer applies the delta;
   the LLM decides whether to ask the user to merge/defer if > 6 components)
 - Lateral panel dispatch (subject to `nextPanelEligible` and the per-interview
-  panel ceiling from `omo.ulwInterview.panelCeiling`, default 6)
+  panel ceiling from `omo.ulwInterview.panelCeiling`, default 20)
 - Closure guard judgment (whether a "material gap" exists; the runtime only
   reports `ready` mathematically)
 - Phase 3 restate gate and incomplete-spec-report decision
