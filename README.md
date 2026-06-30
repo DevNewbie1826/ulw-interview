@@ -63,8 +63,6 @@ Then add to `opencode.json`:
 
 ```jsonc
 {
-```jsonc
-{
   "skills": {
     "paths": ["~/.config/opencode/skills/ulw-interview/skills"]
   }
