@@ -135,11 +135,21 @@ ulw-interview/
 ## Development
 
 ```bash
-# verify runtime tests pass
+# verify runtime tests pass (46 assertions)
 node skills/ulw-interview/references/runtime/test.mjs
-
-# test the plugin locally by pointing skills.paths at this repo
 ```
+
+To test the skill locally in opencode without installing, point `skills.paths` at this repo's `skills/` directory in your project's `opencode.json` (or `~/.config/opencode/opencode.json` for global):
+
+```jsonc
+{
+  "skills": {
+    "paths": ["/absolute/path/to/ulw-interview/skills"]
+  }
+}
+```
+
+Restart opencode and the skill appears in native discovery. This mirrors what the plugin (`.opencode/plugins/ulw-interview.js`) registers at runtime.
 
 ## License
 

@@ -187,7 +187,7 @@ The runtime is deliberately narrow. The LLM continues to own:
 ## Running the tests
 
 ```sh
-node references/runtime/test.mjs
+node test.mjs
 ```
 
 All assertions should pass (46 at the time of writing; the count grows as the
