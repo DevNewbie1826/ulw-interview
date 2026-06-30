@@ -43,9 +43,15 @@ Restart opencode. The skill is auto-discovered by the native skill system.
 ```
 oracle → validate.mjs → scorer.mjs → LLM consumes output verbatim
          (schema check)  (deterministic math)
+
+convergence.mjs → ontology stability tracking (advisory to scorer)
+factsLedger.mjs  → established-facts event-log (closure guard queries disputes)
+refineGate.mjs   → low-progress detection (triggers refinement follow-up)
 ```
 
 All numerical scoring, validation, band classification, stall detection, oscillation suppression, trigger penalties, coverage gaps, streak counting, and next-target selection are handled by deterministic runtime scripts under `skills/ulw-interview/references/runtime/`. The LLM never computes ambiguity by hand.
+
+After the spec is written, the skill presents three options via the `question` tool: **Start planning** (hands off to `/ulw-plan`), **Continue interview** (returns to Phase 2), or **Done**.
 
 See [`skills/ulw-interview/references/runtime/README.md`](./skills/ulw-interview/references/runtime/README.md) for the full runtime contract and known limitations.
 
@@ -84,10 +90,17 @@ ulw-interview/
 │   └── ulw-interview/
 │       ├── SKILL.md                      # skill instructions for the LLM
 │       └── references/
+│           ├── prompts/
+│           │   ├── oracle-scoring.md      # oracle scoring prompt template
+│           │   ├── lateral-panel.md       # panel personas + cooldown + ceiling
+│           │   └── spec-template.md       # spec output template + incomplete report
 │           └── runtime/
 │               ├── scorer.mjs            # deterministic scoring engine
 │               ├── validate.mjs          # oracle JSON validator
-│               ├── test.mjs              # 46 inline assertions
+│               ├── convergence.mjs       # ontology stability reducer
+│               ├── factsLedger.mjs        # established-facts event-log
+│               ├── refineGate.mjs         # low-progress refine-or-skip gate
+│               ├── test.mjs              # 79 inline assertions
 │               └── README.md             # runtime contract
 ├── LICENSE
 └── README.md
@@ -96,7 +109,9 @@ ulw-interview/
 ## Development
 
 ```bash
-# verify runtime tests pass (46 assertions)
+# verify runtime tests pass (79 assertions)
+npm test
+# or directly:
 node skills/ulw-interview/references/runtime/test.mjs
 ```
 
