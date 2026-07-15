@@ -4,7 +4,7 @@
   "description": "Socratic deep interview skill with deterministic ambiguity scoring runtime for opencode",
   "type": "module",
   "scripts": {
-    "test": "node skills/ulw-interview/references/runtime/test.mjs"
+    "test": "node skills/ulw-interview/references/runtime/test.mjs && node skills/ulw-interview/references/runtime/facts-ledger.test.mjs && node skills/ulw-interview/references/runtime/intent-contract.test.mjs && node skills/ulw-interview/references/runtime/scorer-contract.test.mjs && node skills/ulw-interview/references/runtime/transition.test.mjs && node skills/ulw-interview/references/runtime/docs-contract.test.mjs"
   },
   "main": ".opencode/plugins/ulw-interview.js",
   "keywords": [
