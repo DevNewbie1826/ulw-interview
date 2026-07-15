@@ -6,8 +6,6 @@
 // Contract: SKILL.md MUST pipe oracle output through validate.mjs, then through
 // this script. The LLM never computes ambiguity by hand.
 
-import { readFileSync } from 'node:fs';
-
 const TRIGGER_DELTA = -0.15;        // per fired trigger, applied to targeted dim
 const PANEL_COOLDOWN = 2;            // rounds between panel dispatches
 const EPS = 1e-9;                    // float-comparison epsilon for band edges
@@ -16,6 +14,11 @@ const REFINED_CEILING = 0.30;        // upper edge of "refined" band
 const INITIAL_FLOOR = 0.60;          // lower edge of "initial" band (exclusive)
 const THRESHOLD_MIN = 1e-6;          // exclusive lower bound for threshold
 const THRESHOLD_MAX = 0.30;          // inclusive upper bound for threshold
+const MAX_INPUT_BYTES = 1024 * 1024;
+const MAX_DIAGNOSTICS = 64;
+const MAX_DIAGNOSTIC_LENGTH = 512;
+
+class ScorerFailure extends Error {}
 
 // ---------- input schema ----------
 
@@ -46,8 +49,19 @@ const THRESHOLD_MAX = 0.30;          // inclusive upper bound for threshold
  * @property {boolean} [degraded]           // true if validation fallback was used
  */
 
-function readInput() {
-  const raw = readFileSync(0, 'utf8');
+async function readInput() {
+  const chunks = [];
+  let inputBytes = 0;
+  for await (const chunk of process.stdin) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    inputBytes += bytes.length;
+    if (inputBytes > MAX_INPUT_BYTES) {
+      process.stdin.destroy();
+      fail(`Input exceeds ${MAX_INPUT_BYTES} bytes.`);
+    }
+    chunks.push(bytes);
+  }
+  const raw = Buffer.concat(chunks).toString('utf8');
   let parsed;
   try {
     parsed = JSON.parse(raw);
@@ -61,8 +75,29 @@ function readInput() {
 }
 
 function fail(msg) {
-  process.stderr.write(`scorer.mjs: ${msg}\n`);
-  process.exit(1);
+  throw new ScorerFailure(msg);
+}
+
+function diagnosticCollector() {
+  const values = [];
+  let total = 0;
+  return {
+    add(diagnostic) {
+      total += 1;
+      if (values.length >= MAX_DIAGNOSTICS) return;
+      const value = typeof diagnostic === 'function' ? diagnostic() : diagnostic;
+      values.push(value.length > MAX_DIAGNOSTIC_LENGTH
+        ? `${value.slice(0, MAX_DIAGNOSTIC_LENGTH - 1)}…`
+        : value);
+    },
+    throwIfAny() {
+      if (total === 0) return;
+      if (total > MAX_DIAGNOSTICS) {
+        values[MAX_DIAGNOSTICS - 1] = `${total - (MAX_DIAGNOSTICS - 1)} additional errors omitted`;
+      }
+      fail(`Schema violations:\n  - ${values.join('\n  - ')}`);
+    },
+  };
 }
 
 // ---------- validation + clamping ----------
@@ -84,23 +119,23 @@ function clampScore(s) {
 }
 
 function validateInput(input) {
-  const errors = [];
+  const errors = diagnosticCollector();
   if (!Array.isArray(input.components) || input.components.length === 0) {
-    errors.push('components must be a non-empty array');
+    errors.add('components must be a non-empty array');
   }
   if (input.type !== 'greenfield' && input.type !== 'brownfield') {
-    errors.push('type must be "greenfield" or "brownfield"');
+    errors.add('type must be "greenfield" or "brownfield"');
   }
   const validDims = ['goal', 'constraints', 'criteria', 'context'];
   for (const c of input.components || []) {
-    if (!c || typeof c.name !== 'string') errors.push(`component.name missing: ${JSON.stringify(c)}`);
+    if (!c || typeof c.name !== 'string') errors.add(() => `component.name missing: ${JSON.stringify(c)}`);
     if (!c || typeof c.scores !== 'object') {
-      errors.push(`component "${c?.name}" missing scores object`);
+      errors.add(() => `component "${c?.name}" missing scores object`);
       continue;
     }
     for (const dim of validDims) {
       if (dim in c.scores && typeof c.scores[dim] !== 'number') {
-        errors.push(`component "${c?.name}" scores.${dim} must be number`);
+        errors.add(() => `component "${c?.name}" scores.${dim} must be number`);
       }
     }
     const requiredByType = input.type === 'brownfield'
@@ -108,7 +143,7 @@ function validateInput(input) {
       : ['goal', 'constraints', 'criteria'];
     for (const rdim of requiredByType) {
       if (!(rdim in c.scores)) {
-        errors.push(`${input.type} component "${c?.name}" must have scores.${rdim}`);
+        errors.add(() => `${input.type} component "${c?.name}" must have scores.${rdim}`);
       }
     }
   }
@@ -119,21 +154,21 @@ function validateInput(input) {
   const validTriggerTypes = new Set(['A', 'B', 'C', 'D']);
   for (const t of input.triggers || []) {
     if (!t || typeof t !== 'object') {
-      errors.push(`trigger must be an object: ${JSON.stringify(t)}`);
+      errors.add(() => `trigger must be an object: ${JSON.stringify(t)}`);
       continue;
     }
     if (!knownComponents.has(t.component)) {
-      errors.push(`trigger.component "${t.component}" does not match any active component (known: ${[...knownComponents].join(', ')})`);
+      errors.add(() => `trigger.component "${t.component}" does not match any active component (known: ${[...knownComponents].join(', ')})`);
     }
     if (!validTriggerDims.has(t.dim)) {
-      errors.push(`trigger.dim must be one of goal|constraints|criteria|context, got: ${JSON.stringify(t.dim)}`);
+      errors.add(() => `trigger.dim must be one of goal|constraints|criteria|context, got: ${JSON.stringify(t.dim)}`);
     }
     if (!validTriggerTypes.has(t.type)) {
-      errors.push(`trigger.type must be one of A|B|C|D, got: ${JSON.stringify(t.type)}`);
+      errors.add(() => `trigger.type must be one of A|B|C|D, got: ${JSON.stringify(t.type)}`);
     }
   }
 
-  if (errors.length) fail(`Schema violations:\n  - ${errors.join('\n  - ')}`);
+  errors.throwIfAny();
 }
 
 // ---------- core math ----------
@@ -275,9 +310,9 @@ function round(n, digits) {
 
 // ---------- main ----------
 
-function main() {
+async function main() {
   /** @type {ScorerInput} */
-  const input = readInput();
+  const input = await readInput();
   validateInput(input);
 
   const t = clampThreshold(input.threshold);
@@ -401,4 +436,13 @@ function main() {
   process.stdout.write(JSON.stringify(output, null, 2) + '\n');
 }
 
-main();
+try {
+  await main();
+} catch (error) {
+  if (error instanceof ScorerFailure) {
+    process.stderr.write(`scorer.mjs: ${error.message}\n`);
+    process.exitCode = 1;
+  } else {
+    throw error;
+  }
+}

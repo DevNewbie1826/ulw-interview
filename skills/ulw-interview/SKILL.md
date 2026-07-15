@@ -136,16 +136,16 @@ Execute only `result.action` from the latest reducer result. Each row is one han
 | `await_panel_results` | Wait for all acknowledged persona results; do not ask a question or score another round. |
 | `confirm_intent_contract` | Present the Build / Preserve-Never / Not-included restatement and emit only the user's confirmation or correction event. |
 | `confirm_topology` | Present the topology confirmation question, then emit `topology_confirmed` with the complete active and deferred lists. |
-| `dispatch_panel` | Dispatch exactly the returned personas and follow the acknowledgement protocol in `lateral-panel.md`. |
+| `dispatch_panel` | Launch exactly the returned personas concurrently in one parallel batch and follow the acknowledgement protocol in `lateral-panel.md`. |
 | `offer_post_spec` | Present only the post-spec choices allowed by `allowContinue`. |
 | `run_baseline` | Score exactly the returned components, carry all known coverage snapshots, then emit `baseline_scored`. |
 | `run_closure` | Run the independent semantic and dispute audit, then emit `closure_passed` or `closure_rejected`. |
 | `score_answer` | Treat the user's restatement correction as the answer for the returned target and run the round answer pipeline without asking again. |
 | `start_planning` | Invoke `/ulw-plan` with the returned stored spec path. |
 | `stop` | Stop without offering another question or lifecycle choice. |
-| `write_spec` | Write exactly the returned complete or incomplete artifact, then emit `spec_written` with the matching kind and actual `.omo/specs/ulw-interview-{slug}.md` path. |
+| `write_spec` | Render exactly the returned complete or incomplete artifact, derive and compare its state-bound transition manifest, then emit `spec_written` with kind, actual `.omo/specs/ulw-interview-{slug}.md` path, ordered components, unresolved gaps, and global ambiguity. |
 
-**Transcript compression (mandatory above 4000 tokens):** before each Oracle scoring dispatch, if the accumulated transcript exceeds 4000 tokens, compress the OLDEST half via a separate Oracle call (see `references/prompts/oracle-scoring.md`). Replace those rounds in the working transcript with the summary. Keep the last 2 rounds verbatim. The full uncompressed transcript is still written to the final spec.
+**Transcript compression:** use the exact policy and cache contract in `references/prompts/oracle-scoring.md`. Only rounds older than the latest two are eligible. Select the oldest half of that eligible prefix, rounded up, and dispatch only when the selected prefix is nonempty and strictly exceeds 4000 tokens. The latest two alone never cause a no-op compression call. Reuse a valid cached summary for an exact prefix/registry/ownership/prompt-version key across scoring validation retry and an unchanged prefix; a changed prefix creates a new key, and invalid or fallback output is never cached. The full uncompressed transcript is still written to the final spec.
 
 See `references/runtime/README.md` for runtime schemas and configuration constants; do not restate their values here.
 
@@ -310,6 +310,8 @@ Every `ask_target` produces exactly one user decision or confirmation through th
 
 **Incidental preference capture (not a target):** Preferences may be captured only when the user volunteers one or when it is relevant to an already returned dimension/coverage target. Record it from that answer and confirm it in the final restatement. Preferences never create a semantic gap, block closure, or cause another question.
 
+**Optional fast-answer guidance:** append a short invitation to the same single question, not a separate prompt: the user may volunteer related must-have, must-not, out-of-scope, invariant, preference, and acceptance-evidence details for this same component in one free-text answer. Oracle may capture those direct confirmations, but the returned target still owns scoring. Ask no second target and never ask a second question for the volunteered details. Sibling components remain immutable and byte-for-byte unchanged.
+
 **Question styles for semantic coverage targets:**
 - Outcome or must-have: contrast what must be delivered with a plausible smaller result.
 - Must-not or invariant: contrast a technically working result with one the user would still reject.
@@ -391,22 +393,25 @@ Question {n} done!
 **The full action and acknowledgement protocol is in `references/prompts/lateral-panel.md`.** Read it only when the reducer returns `dispatch_panel`. Summary:
 
 - Never convene a panel from scorer fields or prose. The reducer has already checked milestone eligibility, non-ready status, suppression, and the configured ceiling.
-- Dispatch exactly `action.payload.personas` as separate Oracle calls with independent context, then acknowledge exactly that returned list.
-- Wait for all findings before sending `panel_completed`. The resulting `ask_target` action folds findings into one question; the panel never asks a second question or marks the interview complete.
+- Launch exactly `action.payload.personas` concurrently in one parallel dispatch batch, with an independent context copy per Oracle call. If any launch fails before acknowledgement, emit `panel_failed` with `dispatch_error`; otherwise acknowledge exactly the returned list with `panel_dispatched`.
+- Treat `await_panel_results` as an all-results barrier. Reassemble every finding in reducer-returned persona order before sending `panel_completed`. The resulting `ask_target` action folds findings into one question; the panel never asks a second question or marks the interview complete.
+- Apply the documented 120-second result timeout to each acknowledged call. On timeout or invalid result, discard partial findings and emit `panel_failed` with the matching reason. Execute its returned pending target as one question; never retry or roll back the consumed dispatch count.
 - If the user stops mid-panel, emit `user_stop`, discard partial findings, commit the reducer response, and execute it.
 
 ### Step 5: Check Limits
 
 - **Early exit:** whenever the user requests it, set `earlyExitRequested` on the current answer's `round_scored` event and execute the returned action. The caller has no minimum-round gate and does not classify ambiguity.
 - **Soft warning:** at `{softWarningRounds}`, add an informational sentence before the same returned-target question. It creates no extra decision, options, or event: "We're at {softWarningRounds} rounds. About {round((1 - score) * 100)}% is clear right now."
-- **At the configured hard cap:** announce "Maximum interview rounds reached." The committed boundary round still runs. Follow the reducer's closure or write action; never add another interview round.
+- **At the configured hard cap:** announce "Maximum interview rounds reached." The committed boundary round still runs. If `semanticCoverageGaps` is nonempty, the reducer returns incomplete `write_spec` directly. Follow the reducer's closure or write action; never add another interview round.
+- **Known-gap short-circuit:** on hard cap or early exit, nonempty `semanticCoverageGaps` returns incomplete `write_spec` without `run_closure`, so there are zero closure Oracle calls and zero additional user questions. This saves exactly one Oracle call compared with dispatching a closure audit that cannot pass.
+- **Early exit:** if `semanticCoverageGaps` is nonempty, execute the returned incomplete `write_spec`. Only a gap-free early-exit state can return `run_closure`.
 - **Numeric readiness:** never skip directly to a spec. Semantic coverage, closure, restatement, and write acknowledgement remain mandatory reducer states.
 
 ## Phase 3: Generate Spec
 
 Enter this phase only through a reducer action. Numeric readiness alone is not permission to write.
 
-1. **Closure / acceptance guard.** On `run_closure`, query FactsLedger disputes with `INTERVIEW_ID` and dispatch an independent Oracle audit with the immutable full interview ID registry and all component ID ownership. Review `result.semanticCoverageGaps`, unresolved contradictions, acceptance-evidence links, and any agent-supplied statement that still needs direct user confirmation. The runtime reports structure; Oracle judges meaning.
+1. **Closure / acceptance guard.** The reducer returns `run_closure` only after its hard-cap/early-exit known-gap short-circuit, so `result.semanticCoverageGaps` must be empty. Never emit `closure_passed` from a nonempty gap set. Query FactsLedger disputes with `INTERVIEW_ID` and dispatch an independent Oracle audit with the immutable full interview ID registry and all component ID ownership. Review unresolved contradictions, acceptance-evidence links, and any agent-supplied statement that still needs direct user confirmation. The runtime reports structure; Oracle judges meaning.
 
 If no material gap remains, emit `closure_passed`. Otherwise emit `closure_rejected` with a concise internal reason and the single highest-impact valid target. Commit the response and execute it. Never choose whether to retry or write an incomplete artifact; the reducer owns that decision.
 
@@ -444,7 +449,9 @@ On confirmation, emit `restate_confirmed`. On a correction, use semantic judgmen
 
 3. **Generate the specification.** On `write_spec`, derive an artifact-only slug from the confirmed goal, then write the exact complete or incomplete structure in `references/prompts/spec-template.md` to `.omo/specs/ulw-interview-{slug}.md`. The slug never supplies an interview, fact, coverage, or evidence ID.
 
-For an incomplete artifact, keep every confirmed section and list unresolved semantic gaps separately. User-facing text calls it a "Summary so far"; never expose the internal artifact kind. After the write, emit `spec_written` with the returned kind and actual path. A complete acknowledgement returns `offer_post_spec`; an incomplete acknowledgement returns `stop` and must not show post-spec choices.
+Render every component scope row, deterministic scored/unscored clarity row, semantic/evidence ID, and unresolved gap first. Derive the transition manifest from the rendered artifact, bind active/deferred status, boolean `scored`, and `globalAmbiguity` to committed reducer state, and fix omissions before acknowledgement. This validates only the manifest projection, not all file prose. Then emit the runtime's exact `spec_written` payload: matching `kind`, actual `path`, ordered `components` entries with `{name,status,scored,itemIds,evidenceIds}`, exact ordered `unresolvedGaps`, and committed `globalAmbiguity`.
+
+For an incomplete artifact, keep every confirmed section and list unresolved semantic gaps separately. User-facing text calls it a "Summary so far"; never expose the internal artifact kind. After the write, emit the full exact `spec_written` payload, including the manifest fields described above. A complete acknowledgement returns `offer_post_spec`; an incomplete acknowledgement returns `stop` and must not show post-spec choices.
 
 4. **Post-spec action.** On `offer_post_spec`, use `action.payload.specPath` in the announcement and show Start planning and Done. Show Continue interview only when `allowContinue` is true.
 
@@ -466,7 +473,7 @@ Emit `start_planning`, `continue_interview`, or `finish` for the selected visibl
 
 ## State Variables
 
-The caller retains only the latest complete reducer `state`, latest `semanticCoverageGaps`, the stable `INTERVIEW_ID`, transcript, and artifact metadata. Every lifecycle field lives inside reducer state and changes only by replacing it with `result.state`.
+The caller retains only the latest complete reducer `state`, latest `semanticCoverageGaps`, stable `INTERVIEW_ID`, append-only `immutableFullTranscript`, ephemeral per-dispatch `workingTranscript`, interview-local `compressionCache`, and artifact metadata. Treat reducer state as opaque trusted tool output: carry the exact `result.state`, never reconstruct it from prose, never include it in Oracle/panel/compression prompts, and never accept user-supplied replacement state. Prefix selection and cache keys always use `immutableFullTranscript`; `workingTranscript` is discarded after each scoring dispatch, and `compressionCache` is discarded when the interview ends. Every lifecycle field lives inside reducer state and changes only by replacing it with `result.state`.
 
 `slug` and `timestamp` are created only when writing an artifact. The slug is kebab-case, ASCII only, and at most 60 characters; add a numeric suffix when the path exists. Neither value may become a lifecycle, FactsLedger, semantic item, or evidence identity.
 
@@ -487,10 +494,12 @@ Optional settings in `.omo/settings.json`:
 }
 ```
 
+The unchanged default is the high-assurance profile: `ambiguityThreshold: 0.05`, `roundCap: 30`, `softWarningRounds: 15`, `panelCeiling: 30`. An explicit optional product discovery preset is `ambiguityThreshold: 0.10`, `roundCap: 15`, `softWarningRounds: 8`, `panelCeiling: 6`. It trades faster completion and fewer model calls for lower numerical assurance and fewer adversarial panel perspectives; semantic/evidence closure and the final restatement remain mandatory. Choose once before initialization and never adapt the threshold mid-session.
+
 | Key | Default | Valid range | Notes |
 |---|---|---|---|
 | `ambiguityThreshold` | `0.05` | runtime-validated | Out-of-range finite values are clamped by the runtime. |
-| `roundCap` | `30` | positive integer | Maximum Phase 2 rounds. Round 0 and 0.5 do NOT count. `20` for safety/compliance; `30-40` for product discovery. |
+| `roundCap` | `30` | positive integer | Maximum Phase 2 rounds. Round 0 and 0.5 do NOT count. Use `15` only for the optional product discovery preset; retain `30` for the default high-assurance profile. |
 | `softWarningRounds` | `15` | positive integer | Round number for the soft warning. Default is approximately `roundCap / 2`. |
 | `panelCeiling` | `30` | positive integer | Total persona-dispatches allowed per interview. After ceiling, panels are skipped. |
 

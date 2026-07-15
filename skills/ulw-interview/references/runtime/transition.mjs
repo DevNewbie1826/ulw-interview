@@ -21,6 +21,7 @@ const PHASES = new Set([
 ]);
 const BANDS = new Set(['initial', 'progress', 'refined', 'ready']);
 const PERSONAS = new Set(['architect', 'researcher', 'contrarian', 'simplifier']);
+const PANEL_FAILURE_REASONS = new Set(['timeout', 'dispatch_error', 'invalid_result']);
 const PANEL_STAGES = new Set(['none', 'awaiting_dispatch', 'awaiting_results']);
 const DIMENSIONS = new Set(['goal', 'constraints', 'criteria', 'context']);
 const COVERAGE_TARGET_CATEGORIES = new Set([
@@ -60,10 +61,20 @@ const PER_COMPONENT_KEYS = new Set(['name', 'ambiguity', 'scores', 'firedDims', 
 const FIRED_DIM_KEYS = new Set(['dim', 'count', 'delta']);
 const RAW_TARGET_KEYS = new Set(['component', 'dimension']);
 const FINDING_KEYS = new Set(['persona', 'summary', 'options', 'confidence']);
-const PANEL_HISTORY_KEYS = new Set(['round', 'personas', 'panelCooldown']);
+const PANEL_HISTORY_KEYS = new Set([
+  'round', 'personas', 'panelCooldown', 'globalAmbiguity', 'band',
+]);
+const SPEC_COMPONENT_KEYS = new Set(['name', 'status', 'scored', 'itemIds', 'evidenceIds']);
 const EPSILON = 1e-9;
 const THRESHOLD_MIN = 1e-6;
 const THRESHOLD_MAX = 0.30;
+const MAX_COMPONENT_NAME_LENGTH = 120;
+const MAX_KNOWN_COMPONENTS = 64;
+const MAX_SERIALIZED_STATE_BYTES = 1024 * 1024;
+const MAX_SERIALIZED_EVENT_BYTES = 1024 * 1024;
+const MAX_SERIALIZED_PROJECTION_BYTES = 256 * 1024;
+const MAX_SERIALIZED_RESULT_BYTES = 3 * 1024 * 1024;
+const MAX_RAW_TRANSITION_BYTES = 2 * 1024 * 1024 + 4096;
 const INTERVIEW_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SPEC_PATH_PATTERN = /^\.omo\/specs\/ulw-interview-([a-z0-9]+(?:-[a-z0-9]+)*)\.md$/;
 
@@ -111,7 +122,24 @@ function positiveInteger(value) {
 }
 
 function sameJson(left, right) {
-  return JSON.stringify(left) === JSON.stringify(right);
+  if (left === right) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left)
+      && Array.isArray(right)
+      && left.length === right.length
+      && left.every((value, index) => sameJson(value, right[index]));
+  }
+  if (!isObject(left) || !isObject(right)) return false;
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key) => Object.hasOwn(right, key) && sameJson(left[key], right[key]));
+}
+
+function serializedBytes(value) {
+  const serialized = JSON.stringify(value);
+  requireCondition(typeof serialized === 'string');
+  return Buffer.byteLength(serialized, 'utf8');
 }
 
 function sameSet(left, right) {
@@ -148,13 +176,26 @@ function panelBookkeeping(history) {
 function validatePanelDispatchHistory(state) {
   requireCondition(Array.isArray(state.panelDispatchHistory));
   let previousRound = null;
+  let consumed = 0;
   for (const entry of state.panelDispatchHistory) {
     exactKeys(entry, PANEL_HISTORY_KEYS);
     requireCondition(positiveInteger(entry.round) && entry.round <= state.currentRound);
     validateNameList(entry.personas);
     requireCondition(entry.personas.every((persona) => PERSONAS.has(persona)));
     requireCondition(acknowledgedPersonasAreCanonical(entry.personas));
+    const canonicalCount = entry.personas[0] === 'architect' ? 4 : 3;
+    const expectedCount = Math.min(canonicalCount, state.panelCeiling - consumed);
+    requireCondition(expectedCount > 0 && entry.personas.length === expectedCount);
+    consumed += entry.personas.length;
     requireCondition(entry.panelCooldown === 2);
+    requireCondition(entry.globalAmbiguity === state.priorRounds[entry.round]);
+    requireCondition(entry.band === state.priorBandHistory[entry.round]);
+    requireCondition(entry.globalAmbiguity > effectiveThreshold(state.threshold).value + EPSILON);
+    requireCondition(state.priorBandHistory[entry.round - 1] !== entry.band);
+    requireCondition(!expectedPanelSuppression(
+      state.priorBandHistory.slice(0, entry.round),
+      entry.band,
+    ));
     if (previousRound !== null) {
       requireCondition(entry.round > previousRound);
       requireCondition(entry.round - previousRound > entry.panelCooldown);
@@ -168,7 +209,9 @@ function validatePanelDispatchHistory(state) {
 
 function validateNameList(value) {
   requireCondition(Array.isArray(value));
-  requireCondition(value.every(nonEmptyString));
+  requireCondition(value.every((name) => (
+    nonEmptyString(name) && [...name].length <= MAX_COMPONENT_NAME_LENGTH
+  )));
   requireCondition(new Set(value).size === value.length);
 }
 
@@ -433,6 +476,7 @@ function validateStoredScorerHistory(output, state) {
 
 function validateState(state) {
   exactKeys(state, STATE_KEYS);
+  requireCondition(serializedBytes(state) <= MAX_SERIALIZED_STATE_BYTES);
   requireCondition(state.version === 1 && PHASES.has(state.phase));
   requireCondition(typeof state.interviewId === 'string' && INTERVIEW_ID_PATTERN.test(state.interviewId));
   requireCondition(state.declaredType === 'greenfield' || state.declaredType === 'brownfield');
@@ -455,6 +499,7 @@ function validateState(state) {
     requireCondition(['BASELINE', 'WRITE', 'INCOMPLETE', 'STOPPED'].includes(state.phase));
   }
   const knownNames = new Set([...state.topology, ...state.deferredComponents]);
+  requireCondition(knownNames.size <= MAX_KNOWN_COMPONENTS);
   exactKeys(state.scoreStateMatrix, knownNames);
   exactKeys(state.coverageByComponent, knownNames);
   for (const name of knownNames) {
@@ -481,6 +526,7 @@ function validateState(state) {
   ));
   const hasScoreHistory = state.priorAmbiguity !== null;
   requireCondition(hasScoreHistory === (state.priorBand !== null));
+  if (['WRITE', 'DONE', 'INCOMPLETE'].includes(state.phase)) requireCondition(hasScoreHistory);
   if (hasScoreHistory) {
     requireCondition(state.priorRounds.length === state.currentRound + 1);
     requireCondition(state.priorRounds.at(-1) === state.priorAmbiguity);
@@ -533,17 +579,44 @@ function validateState(state) {
     requireCondition(state.askedTarget === null);
   }
 
-  if (state.phase === 'CLOSURE') {
-    exactKeys(state.closureContext, new Set(['hardCap', 'earlyExit']));
+  const carriesClosureContext = state.phase === 'CLOSURE'
+    || state.phase === 'RESTATE'
+    || state.phase === 'DONE'
+    || (state.phase === 'WRITE' && state.pendingWriteKind === 'complete');
+  if (carriesClosureContext) {
+    exactKeys(state.closureContext, new Set(['hardCap', 'earlyExit', 'stage']));
     requireCondition(typeof state.closureContext.hardCap === 'boolean');
     requireCondition(typeof state.closureContext.earlyExit === 'boolean');
     requireCondition(!(state.closureContext.hardCap && state.closureContext.earlyExit));
+    const expectedStage = state.phase === 'CLOSURE'
+      ? 'pending'
+      : state.phase === 'RESTATE'
+        ? 'passed'
+        : 'confirmed';
+    requireCondition(state.closureContext.stage === expectedStage);
+    requireCondition(state.lastScorerOutput !== null);
+    requireCondition(semanticGaps(state).length === 0);
     requireCondition(!state.closureContext.hardCap || state.currentRound >= state.roundCap);
     requireCondition(state.closureContext.hardCap === (state.currentRound === state.roundCap));
+    if (!state.closureContext.hardCap && !state.closureContext.earlyExit) {
+      requireCondition(state.lastScorerOutput.ready);
+    }
+    if (state.closureContext.earlyExit) {
+      requireCondition(state.priorAmbiguity <= effectiveThreshold(state.threshold).value + 0.20);
+    }
+    if (state.phase === 'CLOSURE') {
+      requireCondition(state.hardCapReached === false);
+    } else {
+      requireCondition(state.hardCapReached === state.closureContext.hardCap);
+    }
   } else {
     requireCondition(state.closureContext === null);
   }
   requireCondition(state.phase === 'WRITE' ? state.pendingWriteKind !== null : state.pendingWriteKind === null);
+  if (state.phase === 'WRITE' && state.pendingWriteKind === 'complete') {
+    requireCondition(state.pendingBaselineComponents.length === 0);
+    requireCondition(semanticGaps(state).length === 0);
+  }
   const completedHardCapPhase = state.currentRound === state.roundCap && (
     state.phase === 'RESTATE'
     || state.phase === 'DONE'
@@ -584,6 +657,7 @@ function validateState(state) {
       requireCondition(state.panelDispatchCount >= state.pendingPanelPersonas.length);
     }
   }
+  requireCondition(serializedBytes(specProjection(state)) <= MAX_SERIALIZED_PROJECTION_BYTES);
 }
 
 function openCoverage() {
@@ -622,6 +696,30 @@ function semanticGaps(state, scorerOutput = state.lastScorerOutput) {
     }
   }
   return gaps;
+}
+
+function specComponents(state) {
+  const componentEntry = (name, status) => ({
+    name,
+    status,
+    scored: state.scoreStateMatrix[name] !== null,
+    itemIds: CATEGORY_NAMES.flatMap((category) => (
+      state.coverageByComponent[name].coverage[category].items.map((item) => item.id)
+    )),
+    evidenceIds: state.coverageByComponent[name].acceptance_evidence.map((evidence) => evidence.id),
+  });
+  return [
+    ...state.topology.map((name) => componentEntry(name, 'active')),
+    ...state.deferredComponents.map((name) => componentEntry(name, 'deferred')),
+  ];
+}
+
+function specProjection(state) {
+  return {
+    components: specComponents(state),
+    unresolvedGaps: semanticGaps(state),
+    globalAmbiguity: state.priorAmbiguity,
+  };
 }
 
 function dimensionTarget(rawTarget) {
@@ -705,7 +803,7 @@ function acknowledgedPersonasAreCanonical(personas) {
 function enterWrite(state, kind) {
   state.phase = 'WRITE';
   state.askedTarget = null;
-  state.closureContext = null;
+  if (kind === 'incomplete') state.closureContext = null;
   state.pendingWriteKind = kind;
   clearPanel(state);
 }
@@ -765,11 +863,15 @@ function validateAction(action) {
 function result(state, action) {
   validateState(state);
   validateAction(action);
-  return {
+  const gaps = semanticGaps(state);
+  if (action.type === 'run_closure') requireCondition(gaps.length === 0);
+  const output = {
     state: structuredClone(state),
     action: structuredClone(action),
-    semanticCoverageGaps: structuredClone(semanticGaps(state)),
+    semanticCoverageGaps: structuredClone(gaps),
   };
+  requireCondition(serializedBytes(output) <= MAX_SERIALIZED_RESULT_BYTES);
+  return output;
 }
 
 function initializeTransition(payload) {
@@ -830,6 +932,7 @@ function topologyConfirmed(state, payload) {
   const activeNames = new Set(payload.activeComponents);
   const deferredNames = new Set(payload.deferredComponents);
   requireCondition([...activeNames].every((name) => !deferredNames.has(name)));
+  requireCondition(activeNames.size + deferredNames.size <= MAX_KNOWN_COMPONENTS);
   const previousKnown = new Set([...state.topology, ...state.deferredComponents]);
   const nextKnown = new Set([...payload.activeComponents, ...payload.deferredComponents]);
   requireCondition([...previousKnown].every((name) => nextKnown.has(name)));
@@ -931,6 +1034,7 @@ function roundScored(state, payload) {
     requireCondition(payload.scopeExpansion.newComponents.length > 0);
     const known = new Set([...state.topology, ...state.deferredComponents]);
     requireCondition(payload.scopeExpansion.newComponents.every((name) => !known.has(name)));
+    requireCondition(known.size + payload.scopeExpansion.newComponents.length <= MAX_KNOWN_COMPONENTS);
   }
 
   const priorAskedTarget = structuredClone(state.askedTarget);
@@ -939,28 +1043,41 @@ function roundScored(state, payload) {
   next.coverageByComponent = structuredClone(payload.coverageByComponent);
   next.askedTarget = null;
 
-  if (next.currentRound >= next.roundCap) {
-    next.phase = 'CLOSURE';
-    next.closureContext = { hardCap: true, earlyExit: false };
-    return result(next, { type: 'run_closure', payload: { hardCap: true } });
-  }
   if (payload.scopeExpansion !== null) {
     for (const name of payload.scopeExpansion.newComponents) {
       next.deferredComponents.push(name);
       next.scoreStateMatrix[name] = null;
       next.coverageByComponent[name] = openCoverage();
     }
-    next.phase = 'TOPOLOGY';
     next.scopeChangedSincePanel = true;
+  }
+
+  if (next.currentRound >= next.roundCap) {
+    next.hardCapReached = true;
+    if (payload.scopeExpansion !== null || semanticGaps(next, payload.scorerOutput).length > 0) {
+      enterWrite(next, 'incomplete');
+      if (payload.scopeExpansion !== null) next.scopeChangedSincePanel = true;
+      return result(next, { type: 'write_spec', payload: { kind: 'incomplete' } });
+    }
+    next.hardCapReached = false;
+    next.phase = 'CLOSURE';
+    next.closureContext = { hardCap: true, earlyExit: false, stage: 'pending' };
+    return result(next, { type: 'run_closure', payload: { hardCap: true } });
+  }
+  if (payload.scopeExpansion !== null) {
+    next.phase = 'TOPOLOGY';
     return result(next, { type: 'confirm_topology', payload: {} });
   }
   if (payload.earlyExitRequested) {
-    if (payload.scorerOutput.globalAmbiguity > effectiveThreshold(next.threshold).value + 0.20) {
+    if (
+      semanticGaps(next, payload.scorerOutput).length > 0
+      || payload.scorerOutput.globalAmbiguity > effectiveThreshold(next.threshold).value + 0.20
+    ) {
       enterWrite(next, 'incomplete');
       return result(next, { type: 'write_spec', payload: { kind: 'incomplete' } });
     }
     next.phase = 'CLOSURE';
-    next.closureContext = { hardCap: false, earlyExit: true };
+    next.closureContext = { hardCap: false, earlyExit: true, stage: 'pending' };
     return result(next, { type: 'run_closure', payload: { earlyExit: true } });
   }
 
@@ -971,7 +1088,7 @@ function roundScored(state, payload) {
   }
   if (payload.scorerOutput.ready) {
     next.phase = 'CLOSURE';
-    next.closureContext = { hardCap: false, earlyExit: false };
+    next.closureContext = { hardCap: false, earlyExit: false, stage: 'pending' };
     return result(next, { type: 'run_closure', payload: {} });
   }
   const scorerTarget = dimensionTarget(payload.scorerOutput.nextTarget);
@@ -997,18 +1114,24 @@ function panelDispatched(state, payload) {
   exactKeys(payload, new Set(['personas']));
   requireCondition(sameJson(payload.personas, state.pendingPanelPersonas));
   const next = structuredClone(state);
-  next.panelDispatchHistory.push({
-    round: next.currentRound,
-    personas: structuredClone(payload.personas),
-    panelCooldown: next.lastScorerOutput.panelCooldown,
-  });
-  const bookkeeping = panelBookkeeping(next.panelDispatchHistory);
-  next.panelDispatchCount = bookkeeping.count;
-  requireCondition(next.panelDispatchCount <= next.panelCeiling);
-  next.priorPanelRound = bookkeeping.lastRound;
-  if (payload.personas.includes('architect')) next.scopeChangedSincePanel = false;
+  recordPanelDispatch(next, payload.personas);
   next.panelStage = 'awaiting_results';
   return result(next, { type: 'await_panel_results', payload: {} });
+}
+
+function recordPanelDispatch(state, personas) {
+  state.panelDispatchHistory.push({
+    round: state.currentRound,
+    personas: structuredClone(personas),
+    panelCooldown: state.lastScorerOutput.panelCooldown,
+    globalAmbiguity: state.lastScorerOutput.globalAmbiguity,
+    band: state.lastScorerOutput.band,
+  });
+  const bookkeeping = panelBookkeeping(state.panelDispatchHistory);
+  state.panelDispatchCount = bookkeeping.count;
+  requireCondition(state.panelDispatchCount <= state.panelCeiling);
+  state.priorPanelRound = bookkeeping.lastRound;
+  if (personas.includes('architect')) state.scopeChangedSincePanel = false;
 }
 
 function panelCompleted(state, payload) {
@@ -1030,12 +1153,34 @@ function panelCompleted(state, payload) {
   });
 }
 
+function panelFailed(state, payload) {
+  requireCondition(
+    (state.panelStage === 'awaiting_dispatch' || state.panelStage === 'awaiting_results')
+    && state.pendingTarget !== null,
+  );
+  exactKeys(payload, new Set(['reason']));
+  requireCondition(PANEL_FAILURE_REASONS.has(payload.reason));
+  requireCondition(
+    state.panelStage === 'awaiting_dispatch'
+      ? payload.reason === 'dispatch_error'
+      : payload.reason !== 'dispatch_error',
+  );
+  const next = structuredClone(state);
+  if (next.panelStage === 'awaiting_dispatch') {
+    recordPanelDispatch(next, next.pendingPanelPersonas);
+  }
+  const target = structuredClone(next.pendingTarget);
+  next.askedTarget = target;
+  clearPanel(next);
+  return result(next, { type: 'ask_target', payload: { target } });
+}
+
 function closurePassed(state, payload) {
   exactKeys(payload, new Set());
   requireCondition(semanticGaps(state).length === 0);
   const next = structuredClone(state);
   next.hardCapReached = next.closureContext.hardCap;
-  next.closureContext = null;
+  next.closureContext.stage = 'passed';
   next.phase = 'RESTATE';
   return result(next, { type: 'confirm_intent_contract', payload: {} });
 }
@@ -1060,6 +1205,7 @@ function closureRejected(state, payload) {
 function restateConfirmed(state, payload) {
   exactKeys(payload, new Set());
   const next = structuredClone(state);
+  next.closureContext.stage = 'confirmed';
   enterWrite(next, 'complete');
   return result(next, { type: 'write_spec', payload: { kind: 'complete' } });
 }
@@ -1072,14 +1218,27 @@ function restateCorrected(state, payload) {
     enterWrite(next, 'incomplete');
     return result(next, { type: 'write_spec', payload: { kind: 'incomplete' } });
   }
+  next.closureContext = null;
   next.phase = 'ROUND';
   next.askedTarget = structuredClone(payload.target);
   return result(next, { type: 'score_answer', payload: { target: next.askedTarget } });
 }
 
 function specWritten(state, payload) {
-  exactKeys(payload, new Set(['kind', 'path']));
+  exactKeys(payload, new Set([
+    'kind', 'path', 'components', 'unresolvedGaps', 'globalAmbiguity',
+  ]));
   requireCondition(payload.kind === state.pendingWriteKind && validSpecPath(payload.path));
+  requireCondition(Array.isArray(payload.components));
+  for (const component of payload.components) {
+    exactKeys(component, SPEC_COMPONENT_KEYS);
+    requireCondition(typeof component.scored === 'boolean');
+    requireCondition(Array.isArray(component.itemIds) && Array.isArray(component.evidenceIds));
+  }
+  const expected = specProjection(state);
+  requireCondition(sameJson(payload.components, expected.components));
+  requireCondition(sameJson(payload.unresolvedGaps, expected.unresolvedGaps));
+  requireCondition(payload.globalAmbiguity === expected.globalAmbiguity);
   const next = structuredClone(state);
   const kind = next.pendingWriteKind;
   next.writtenSpecPath = payload.path;
@@ -1100,7 +1259,9 @@ function continueInterview(state, payload) {
   requireCondition(!state.hardCapReached && state.lastScorerOutput !== null);
   const next = structuredClone(state);
   next.phase = 'ROUND';
+  next.closureContext = null;
   next.closureRejections = 0;
+  next.writtenSpecPath = null;
   next.askedTarget = chooseTarget(next, next.lastScorerOutput);
   return result(next, { type: 'ask_target', payload: { target: next.askedTarget } });
 }
@@ -1117,6 +1278,7 @@ function finishTransition(state, payload) {
   exactKeys(payload, new Set());
   const next = structuredClone(state);
   next.phase = 'STOPPED';
+  next.closureContext = null;
   return result(next, { type: 'stop', payload: {} });
 }
 
@@ -1151,6 +1313,7 @@ function reduceValidated(state, event) {
   if (state.phase === 'ROUND' && event.type === 'round_scored') return roundScored(state, event.payload);
   if (state.phase === 'ROUND' && event.type === 'panel_dispatched') return panelDispatched(state, event.payload);
   if (state.phase === 'ROUND' && event.type === 'panel_completed') return panelCompleted(state, event.payload);
+  if (state.phase === 'ROUND' && event.type === 'panel_failed') return panelFailed(state, event.payload);
   if (state.phase === 'CLOSURE' && event.type === 'closure_passed') return closurePassed(state, event.payload);
   if (state.phase === 'CLOSURE' && event.type === 'closure_rejected') return closureRejected(state, event.payload);
   if (state.phase === 'RESTATE' && event.type === 'restate_confirmed') return restateConfirmed(state, event.payload);
@@ -1180,12 +1343,25 @@ export function formatExecutionError(error, parsed) {
 }
 
 export function reduceTransition(state, event) {
+  requireCondition(serializedBytes(event) <= MAX_SERIALIZED_EVENT_BYTES);
   return reduceValidated(state, event);
 }
 
 async function main() {
-  let raw = '';
-  for await (const chunk of process.stdin) raw += chunk;
+  const chunks = [];
+  let rawBytes = 0;
+  for await (const chunk of process.stdin) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    rawBytes += bytes.length;
+    if (rawBytes > MAX_RAW_TRANSITION_BYTES) {
+      process.stdin.destroy();
+      process.stderr.write(`transition.mjs: input exceeds ${MAX_RAW_TRANSITION_BYTES} bytes\n`);
+      process.exitCode = 1;
+      return;
+    }
+    chunks.push(bytes);
+  }
+  const raw = Buffer.concat(chunks).toString('utf8');
   let parsed;
   try {
     parsed = JSON.parse(raw);

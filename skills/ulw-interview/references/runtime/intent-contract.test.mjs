@@ -10,6 +10,8 @@ import { reduceTransition } from './transition.mjs';
 const runtimeDir = dirname(fileURLToPath(import.meta.url));
 const validatorPath = join(runtimeDir, 'validate.mjs');
 const scorerPath = join(runtimeDir, 'scorer.mjs');
+const MAX_VALIDATOR_INPUT_BYTES = 1024 * 1024;
+const MAX_REGISTRY_CONTEXT_BYTES = 256 * 1024;
 
 function validCoverage() {
   return {
@@ -58,6 +60,24 @@ function runRaw(input, args = []) {
 
 function runValidator(input, args = []) {
   return runRaw(JSON.stringify(input), args).output;
+}
+
+function registryContextAtBytes(targetBytes) {
+  const context = { component: 'A', owners: {} };
+  let index = 100000;
+  while (true) {
+    const key = `O${index}`;
+    context.owners[key] = 'A';
+    if (Buffer.byteLength(JSON.stringify(context)) > targetBytes) {
+      delete context.owners[key];
+      break;
+    }
+    index += 1;
+  }
+  const remaining = targetBytes - Buffer.byteLength(JSON.stringify(context));
+  context.component += 'x'.repeat(remaining);
+  assert.equal(Buffer.byteLength(JSON.stringify(context)), targetBytes);
+  return Buffer.from(JSON.stringify(context)).toString('base64url');
 }
 
 function clone(value) {
@@ -554,6 +574,91 @@ test('rejects malformed JSON without treating process success as validation succ
   assert.match(output.errors[0], /not valid JSON/);
 });
 
+test('rejects oversized raw input before JSON parsing', () => {
+  const { output } = runRaw('x'.repeat(MAX_VALIDATOR_INPUT_BYTES + 1));
+  assert.equal(output.ok, false);
+  assert.deepEqual(output.errors, [
+    `input exceeds ${MAX_VALIDATOR_INPUT_BYTES} bytes`,
+  ]);
+});
+
+test('large validation failures remain bounded complete parseable JSON', () => {
+  const input = validInput();
+  for (let index = 0; index < 5000; index += 1) input[`unknown_${index}`] = true;
+  const { output, stdout } = runRaw(JSON.stringify(input));
+  assert.equal(output.ok, false);
+  assert.equal(output.errors.length, 64);
+  assert.match(output.errors.at(-1), /additional errors omitted/);
+  assert.ok(Buffer.byteLength(stdout) < 65536);
+  assert.ok(stdout.endsWith('\n'));
+});
+
+test('registry context accepts its exact byte limit and rejects one byte over before parsing', () => {
+  const exact = registryContextAtBytes(MAX_REGISTRY_CONTEXT_BYTES);
+  const exactOutput = runValidator(validInput(), [`--registry-context=${exact}`]);
+  assert.equal(exactOutput.ok, true);
+
+  const overflow = registryContextAtBytes(MAX_REGISTRY_CONTEXT_BYTES + 1);
+  const overflowOutput = runValidator(validInput(), [`--registry-context=${overflow}`]);
+  assert.equal(overflowOutput.ok, false);
+  assert.deepEqual(overflowOutput.errors, [
+    `registry context exceeds ${MAX_REGISTRY_CONTEXT_BYTES} decoded bytes`,
+  ]);
+});
+
+test('accepts exactly one clean JSON or unlabeled fence without changing validation', () => {
+  const raw = JSON.stringify(validInput(), null, 2);
+  const baseline = runRaw(raw).output;
+  const fixtures = [
+    ['json fence', `\`\`\`json\n${raw}\n\`\`\``],
+    ['unlabeled fence', `\`\`\`\n${raw}\n\`\`\``],
+    [
+      'CRLF json fence with surrounding whitespace',
+      ` \r\n\`\`\`json\r\n${raw.replaceAll('\n', '\r\n')}\r\n\`\`\`\r\n\t`,
+    ],
+  ];
+
+  for (const [name, fixture] of fixtures) {
+    assert.deepEqual(runRaw(fixture).output, baseline, name);
+  }
+});
+
+test('rejects ambiguous prose multiple malformed empty nested and labeled fences', () => {
+  const raw = JSON.stringify(validInput());
+  const retryHint = runRaw('{not json').output.retryHint;
+  const fixtures = [
+    ['prose before', `Oracle response:\n\`\`\`json\n${raw}\n\`\`\``],
+    ['prose after', `\`\`\`json\n${raw}\n\`\`\`\nLooks good`],
+    ['multiple blocks', `\`\`\`json\n${raw}\n\`\`\`\n\`\`\`json\n${raw}\n\`\`\``],
+    ['unsupported label', `\`\`\`javascript\n${raw}\n\`\`\``],
+    ['uppercase label', `\`\`\`JSON\n${raw}\n\`\`\``],
+    ['empty body', '\`\`\`json\n\n\`\`\`'],
+    ['nested fence', `\`\`\`json\n\`\`\`\n${raw}\n\`\`\`\n\`\`\``],
+    ['opening fence has trailing text', `\`\`\`json extra\n${raw}\n\`\`\``],
+    ['closing fence is not on its own line', `\`\`\`json\n${raw}\`\`\``],
+    ['malformed inner JSON', '\`\`\`json\n{"type":\n\`\`\`'],
+  ];
+
+  for (const [name, fixture] of fixtures) {
+    const output = runRaw(fixture).output;
+    assert.equal(output.ok, false, name);
+    assert.match(output.errors[0], /not valid JSON/, name);
+    assert.equal(output.retryHint, retryHint, name);
+  }
+});
+
+test('preserves schema and provenance rejection inside a clean fence', () => {
+  const invalid = validInput();
+  invalid.coverage.must_haves.source = 'oracle';
+  const raw = JSON.stringify(invalid);
+  const baseline = runRaw(raw).output;
+  const fenced = runRaw(`\`\`\`json\n${raw}\n\`\`\``).output;
+  assert.deepEqual(fenced, baseline);
+  assert.deepEqual(fenced.errors, [
+    'coverage.must_haves.source must be "user" when status is "confirmed"',
+  ]);
+});
+
 test('is deterministic for repeated runs', () => {
   const serialized = JSON.stringify(validInput());
   assert.equal(runRaw(serialized).stdout, runRaw(serialized).stdout);
@@ -565,6 +670,13 @@ function runScenario(name) {
     assert.equal(output.ok, true);
     assert.deepEqual(output.normalized.coverage, validCoverage());
     return { status: 'PASS', scenario: name, normalized: true };
+  }
+  if (name === 'clean-fence') {
+    const raw = JSON.stringify(validInput(), null, 2);
+    const baseline = runRaw(raw).output;
+    const output = runRaw(`\`\`\`json\n${raw}\n\`\`\``).output;
+    assert.deepEqual(output, baseline);
+    return { status: 'PASS', scenario: name, normalized: true, wrapper: 'json-fence' };
   }
   if (name === 'invalid-provenance') {
     const input = validInput();

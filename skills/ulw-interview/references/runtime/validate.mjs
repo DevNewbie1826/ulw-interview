@@ -8,8 +8,6 @@
 // piping into scorer.mjs. If ok:false twice in a row, the LLM falls back to
 // conservative scores (all dims 0.5) per the SKILL.md fallback policy.
 
-import { readFileSync } from 'node:fs';
-
 // Optional CLI arg: --expected-type=greenfield|brownfield
 // When provided, this is authoritative and overrides any `type` field in the input.
 // The LLM passes this from Phase 1's brownfield/greenfield detection so the validator
@@ -56,9 +54,38 @@ const EVIDENCE_KEYS = new Set(['id', 'verifies', 'type', 'pass_condition', 'sour
 const EVIDENCE_TYPES = new Set(['test', 'inspection', 'observation', 'analysis']);
 const REGISTRY_CONTEXT_KEYS = new Set(['component', 'owners']);
 const REGISTRY_ID_PATTERN = /^[OMNXIPE][1-9][0-9]*$/;
+const MAX_VALIDATOR_INPUT_BYTES = 1024 * 1024;
+const MAX_REGISTRY_CONTEXT_BYTES = 256 * 1024;
+const MAX_REGISTRY_CONTEXT_ENCODED_CHARS = Math.ceil(MAX_REGISTRY_CONTEXT_BYTES * 4 / 3);
+const MAX_COMPONENT_NAME_LENGTH = 120;
+const MAX_VALIDATION_ERRORS = 64;
 
-function readInput() {
-  return readFileSync(0, 'utf8');
+class ValidationFailure extends Error {
+  constructor(errors) {
+    super('validation failed');
+    this.errors = errors;
+  }
+}
+
+async function readInput() {
+  const chunks = [];
+  let inputBytes = 0;
+  for await (const chunk of process.stdin) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    inputBytes += bytes.length;
+    if (inputBytes > MAX_VALIDATOR_INPUT_BYTES) {
+      process.stdin.destroy();
+      return null;
+    }
+    chunks.push(bytes);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+function unwrapJsonFence(input) {
+  const match = /^(?:```json|```)\r?\n([\s\S]*)\r?\n```$/.exec(input);
+  if (!match || match[1].trim() === '' || match[1].includes('```')) return input;
+  return match[1];
 }
 
 function clamp01(n) {
@@ -85,11 +112,19 @@ function isNonNegativeInteger(value) {
 
 function parseRegistryContext(encoded, errors) {
   const errorCount = errors.length;
+  if (encoded.length > MAX_REGISTRY_CONTEXT_ENCODED_CHARS) {
+    errors.push(`registry context exceeds ${MAX_REGISTRY_CONTEXT_BYTES} decoded bytes`);
+    return null;
+  }
   if (!/^[A-Za-z0-9_-]+$/.test(encoded)) {
     errors.push('registry context must be canonical non-empty base64url JSON');
     return null;
   }
   const bytes = Buffer.from(encoded, 'base64url');
+  if (bytes.length > MAX_REGISTRY_CONTEXT_BYTES) {
+    errors.push(`registry context exceeds ${MAX_REGISTRY_CONTEXT_BYTES} decoded bytes`);
+    return null;
+  }
   if (bytes.toString('base64url') !== encoded) {
     errors.push('registry context must be canonical non-empty base64url JSON');
     return null;
@@ -117,6 +152,8 @@ function parseRegistryContext(encoded, errors) {
   if (!Object.hasOwn(parsed, 'owners')) errors.push('registry context.owners is required');
   if (typeof parsed.component !== 'string' || parsed.component.trim() === '') {
     errors.push('registry context.component must be a non-empty string');
+  } else if ([...parsed.component].length > MAX_COMPONENT_NAME_LENGTH) {
+    errors.push(`registry context.component must be at most ${MAX_COMPONENT_NAME_LENGTH} characters`);
   }
   if (!isObject(parsed.owners)) {
     errors.push('registry context.owners must be an object');
@@ -127,6 +164,8 @@ function parseRegistryContext(encoded, errors) {
       }
       if (typeof owner !== 'string' || owner.trim() === '') {
         errors.push(`registry context.owners.${id} must be a non-empty string`);
+      } else if ([...owner].length > MAX_COMPONENT_NAME_LENGTH) {
+        errors.push(`registry context.owners.${id} must be at most ${MAX_COMPONENT_NAME_LENGTH} characters`);
       }
     }
   }
@@ -353,6 +392,16 @@ function normalizeAcceptanceEvidence(entries) {
 }
 
 function fail(errors) {
+  throw new ValidationFailure(errors);
+}
+
+function writeFailure(errors) {
+  const boundedErrors = errors.length > MAX_VALIDATION_ERRORS
+    ? [
+      ...errors.slice(0, MAX_VALIDATION_ERRORS - 1),
+      `${errors.length - (MAX_VALIDATION_ERRORS - 1)} additional errors omitted`,
+    ]
+    : errors;
   const retryHint =
     'Re-dispatch the oracle with explicit instruction: '
     + '"Return STRICT JSON only. Required fields: scores{goal,constraints,criteria[,context]}, '
@@ -361,10 +410,9 @@ function fail(errors) {
     + 'All scores in [0,1]. User provenance must be explicit. No prose, code fences, or unknown keys."';
   process.stdout.write(JSON.stringify({
     ok: false,
-    errors,
+    errors: boundedErrors,
     retryHint,
   }, null, 2) + '\n');
-  process.exit(0); // exit 0: the LLM reads the ok:false payload
 }
 
 function coerceType(value) {
@@ -381,15 +429,19 @@ function coerceType(value) {
   return null;
 }
 
-function main() {
-  const raw = readInput().trim();
+async function main() {
+  const input = await readInput();
+  if (input === null) {
+    fail([`input exceeds ${MAX_VALIDATOR_INPUT_BYTES} bytes`]);
+  }
+  const raw = input.trim();
   if (!raw) {
     fail(['empty input']);
   }
 
   let parsed;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(unwrapJsonFence(raw));
   } catch (e) {
     fail([`not valid JSON: ${e.message}`]);
   }
@@ -498,4 +550,12 @@ function main() {
   process.stdout.write(JSON.stringify(output, null, 2) + '\n');
 }
 
-main();
+try {
+  await main();
+} catch (error) {
+  if (error instanceof ValidationFailure) {
+    writeFailure(error.errors);
+  } else {
+    throw error;
+  }
+}

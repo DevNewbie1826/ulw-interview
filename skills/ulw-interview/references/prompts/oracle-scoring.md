@@ -22,6 +22,8 @@ Current committed interview round: {source_round}
 
 Treat the registry and ownership map as immutable. During baseline, return only the complete snapshot for `currentBaselineComponent`; during a scored round, only the asked component snapshot may change. Never edit, move, or regenerate an ID owned by any component.
 
+If one free-text answer also volunteers related must-have, must-not, out-of-scope, invariant, preference, or acceptance-evidence details, fast-answer capture may record those direct confirmations only for the same component. The returned asked target still owns scoring. This creates no second target and no second question, and every sibling component remains byte-for-byte unchanged.
+
 Score these dimensions:
 1. Goal Clarity: desired outcome plus required positive behavior.
 2. Constraint Clarity: must-nots, out-of-scope work, and invariants.
@@ -139,10 +141,34 @@ Respond as STRICT JSON only. No prose, no code fences, and no unknown keys.
 - **C** — low-quality/evasive answer
 - **D** — scope expansion (new component/entity/constraint)
 
-## Transcript compression (mandatory above 4000 tokens)
+## Transcript compression (eligible selected prefix above 4000 tokens)
 
-Before each Oracle scoring dispatch, if the accumulated transcript exceeds 4000 tokens, compress the OLDEST half via a separate Oracle call. Supply the immutable full interview ID registry and all component ID ownership as read-only context:
+Use this executable policy before each Oracle scoring dispatch:
+
+<!-- compression-policy:start -->
+```json
+{
+  "trigger_tokens": 4000,
+  "latest_verbatim_rounds": 2,
+  "selection": "oldest_half_of_eligible_prefix_rounded_up",
+  "cache_key": [
+    "exact_prefix",
+    "global_id_registry",
+    "all_component_id_ownership",
+    "compression_prompt_version"
+  ]
+}
+```
+<!-- compression-policy:end -->
+
+1. The immutable full transcript, stored as append-only `immutableFullTranscript`, is the only source for prefix selection, token counting, cache keys, and the final artifact. Set `eligiblePrefix` to only its complete interview Q&A rounds older than the latest two. The latest two rounds are never eligible, even when they alone exceed 4000 tokens.
+2. Set `selectedPrefix` to the oldest `ceil(eligiblePrefix.length / 2)` rounds. Dispatch compression only when `selectedPrefix.length > 0` and its token count is strictly greater than 4000. Exactly 4000 does not dispatch. Two recent rounds therefore make zero compression calls; with three rounds, only round one can be selected.
+3. Compute the cache key from the exact UTF-8 bytes of `selectedPrefix`, immutable full interview ID registry, all component ID ownership, and `compressionPromptVersion`. The cache lifetime is one interview. A hit returns the validated summary without a model call; a miss supplies the registry and ownership map as read-only compression context:
 
 > `Summarize the following interview Q&A rounds in ≤500 tokens, preserving every confirmed decision, semantic coverage item and ID, acceptance-evidence link, fired trigger, and score change.`
 
-Replace those rounds in the working transcript with the summary. Keep the last 2 rounds verbatim. The full uncompressed transcript is still written to the final spec.
+Validate a candidate before cache insertion: it is at most 500 tokens and retains every semantic/evidence ID, fired trigger, and score-change record present in `selectedPrefix`. A missing semantic or evidence ID makes the summary invalid. Never cache invalid or fallback output; use the original selected rounds verbatim instead.
+
+Build an ephemeral `workingTranscript` by replacing only `selectedPrefix` with the validated summary and keeping the remaining rounds, including the latest two, verbatim. The working transcript is never a source for later prefix selection or cache-key computation. A scoring validation retry must reuse the summary for the same cache key. An unchanged prefix on a later dispatch also reuses it. When the prefix changes, invalidate the previous lookup by computing a new key. Discard `workingTranscript` after the dispatch and discard the entire cache when the interview ends. The full uncompressed transcript is always written to the final spec.
+
+If valid cache key `i` is encountered `k_i` times, compression calls saved across valid key groups are `sum(k_i - 1)`. Avoiding an empty or below-trigger selected prefix saves one otherwise no-op call for each such scoring dispatch.

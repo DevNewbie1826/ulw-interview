@@ -50,13 +50,13 @@ Every successful call returns `{state, action, semanticCoverageGaps}`. The calle
 
 The reducer owns policy precedence after a committed round: hard cap, scope expansion, early exit, `semanticCoverageGaps`, numerical readiness, panel flow, refinement, then the scorer target. This prevents a caller from skipping required phases or selecting a different target.
 
-Round score commits isolate the answered target: only `askedTarget.component` may change, while every unasked sibling score must remain unchanged and any sibling mutation is rejected. Closure passage is mechanically zero-gap: `closure_passed` requires `semanticCoverageGaps` to be exactly empty, including hard-cap and early-exit closure; missing acceptance evidence leaves a gap and makes `closure_passed` reject the event.
+Round score commits isolate the answered target: only `askedTarget.component` may change, while every unasked sibling score must remain unchanged and any sibling mutation is rejected. Closure passage is mechanically zero-gap: `closure_passed` requires `semanticCoverageGaps` to be exactly empty, including hard-cap and early-exit closure; missing acceptance evidence leaves a gap and makes `closure_passed` reject the event. Retained `closureContext.stage` maps exactly to lifecycle progress: `pending` for `CLOSURE`, `passed` for `RESTATE`, and `confirmed` for complete `WRITE` and `DONE`.
 
-Normal and incomplete artifacts are component-aware: their tables preserve each component's per-component dimension scores, semantic ownership, provenance, and evidence history, while Metadata uses the reducer's `globalAmbiguity`, the MAX of per-component ambiguity, without recomputing it from rendered rows.
+Normal and incomplete artifacts are component-aware: their tables preserve each component's scope, scored/unscored state, per-component dimension scores, semantic ownership, provenance, and evidence history, while Metadata uses the reducer's `globalAmbiguity`, the MAX of per-component ambiguity, without recomputing it from rendered rows. Null-scored components remain visible and render `—` instead of invented scores. Before `spec_written`, the instruction layer derives the state-bound manifest from the rendered artifact. The exact payload is `{kind,path,components,unresolvedGaps,globalAmbiguity}`; ordered component entries are `{name,status,scored,itemIds,evidenceIds}`. The runtime validates these projected fields against state but validates no file prose or content beyond the manifest.
 
 A reopened baseline uses `pendingBaselineComponents` as the sorted provenance list for exactly the null-scored active components named by `run_baseline.components`; retained scores and coverage stay unchanged while a commit mutates only that pending set. `user_stop` is legal in `BASELINE`: initial unscored state stops directly, while reopened state with known high ambiguity enters incomplete writing and preserves the pending list through acknowledgement.
 
-Panel ownership is split at a machine boundary: the scorer produces a non-ready panel signal; transition owns dispatch eligibility, persona choice, ceiling enforcement, and `panel_dispatched -> await_panel_results -> panel_completed` sequencing. `panelDispatchHistory` is the authoritative ordered history: `panelDispatchCount` and `priorPanelRound` are derived from it, and its ordered entries enforce cooldown chronology. Eligibility uses the scorer-consistent strict comparison `currentRound - priorPanelRound > PANEL_COOLDOWN`; with cooldown `2`, history rounds `[1,3]` are rejected and `[1,4]` are legal. The LLM invokes each and only the returned personas. Panel findings carry `{persona,summary,options,confidence}` and must identify every acknowledged persona in the same order. Ready output never dispatches a panel.
+Panel ownership is split at a machine boundary: the scorer produces a non-ready panel signal; transition owns dispatch eligibility, persona choice, ceiling enforcement, and both pre-acknowledgement and post-acknowledgement failure recovery. The LLM launches all returned personas concurrently in one parallel batch with independent context. A launch-time error emits `panel_failed{reason:"dispatch_error"}` from `awaiting_dispatch`; the reducer atomically records the intended batch, clears panel state, and resumes the pending target. After `panel_dispatched`, an all-results barrier uses a 120-second per-call result timeout; timeout or invalid result emits `panel_failed`, preserving the consumed count and returning the target without findings. For persona latencies `L_i`, critical-path savings are exactly `sum(L_i) - max(L_i)` while call count is unchanged. `panelDispatchHistory` is the authoritative ordered cooldown chronology: each entry stores the authorized `globalAmbiguity` and `band` from the matching scorer-history round and must use the canonical persona sequence truncated only by the remaining `panelCeiling`; `panelDispatchCount` and `priorPanelRound` are derived from it. Eligibility uses `currentRound - priorPanelRound > PANEL_COOLDOWN`; with cooldown `2`, history rounds `[1,3]` are rejected and `[1,4]` are legal. Panel findings carry `{persona,summary,options,confidence}` and must identify every acknowledged persona in the same order. Ready output never dispatches a panel.
 
 ## Oracle Validation And Semantic Coverage
 
@@ -71,6 +71,8 @@ Each component coverage snapshot has exactly these categories on one object: `ou
 Acceptance evidence is append-only. Every currently active M/N/I item must have acceptance evidence with a user-confirmed pass condition before semantic closure, while evidence may continue to reference superseded history. Structural validation accepts a snapshot with a missing active link so transition can return that exact coverage target; malformed, dangling, or duplicate links are rejected.
 
 Within an interview, item IDs and evidence IDs are globally unique, immutable, and never reused or moved. `transition.mjs` enforces cross-component history, round provenance, snapshot carry-forward, and mutation of only the component selected by the prior target.
+
+Transcript compression is instruction-layer work. The append-only immutable full transcript is the only source for selection, token counting, cache keys, and final artifact rendering. The latest two complete rounds are always verbatim and ineligible. From older rounds, select the oldest half rounded up, and compress only if that selected prefix is nonempty and strictly exceeds 4000 tokens. The one-interview cache stores only summaries validated for the exact prefix bytes, immutable registry, ownership map, and compression prompt version; retries and unchanged prefixes reuse them. A working transcript is ephemeral and never feeds later selection. Invalid or fallback output is never cached. Valid key `i` reused `k_i` times saves `k_i - 1` calls, for total savings `sum(k_i - 1)`.
 
 ## Scoring Contract
 
@@ -99,6 +101,18 @@ These runtime values are documented only here. Instruction and prompt prose refe
 | `THRESHOLD_MIN` | `1e-6` | Minimum clamped threshold. |
 | `THRESHOLD_MAX` | `0.30` | Maximum clamped threshold. |
 | `EPS` | `1e-9` | Floating-point comparison tolerance. |
+| `MAX_COMPONENT_NAME_LENGTH` | `120` | Maximum Unicode code points in one component name. |
+| `MAX_KNOWN_COMPONENTS` | `64` | Maximum active plus deferred components. |
+| `MAX_SERIALIZED_STATE_BYTES` | `1048576` | Maximum serialized reducer state bytes. |
+| `MAX_SERIALIZED_EVENT_BYTES` | `1048576` | Maximum serialized event bytes before deep validation. |
+| `MAX_SERIALIZED_PROJECTION_BYTES` | `262144` | Maximum state-derived manifest and semantic-gap projection bytes. |
+| `MAX_SERIALIZED_RESULT_BYTES` | `3145728` | Maximum serialized reducer result bytes after bounded projection. |
+| `MAX_RAW_TRANSITION_BYTES` | `2101248` | Maximum transition CLI stdin bytes before parsing. |
+| `MAX_VALIDATOR_INPUT_BYTES` | `1048576` | Maximum validator stdin bytes before parsing. |
+| `MAX_REGISTRY_CONTEXT_BYTES` | `262144` | Maximum decoded baseline registry-context bytes before parsing. |
+| `MAX_INPUT_BYTES` | `1048576` | Maximum scorer, refine-gate, and FactsLedger stdin bytes before parsing. |
+| `MAX_VALIDATION_ERRORS` | `64` | Maximum validator error records, including the omission marker. |
+| `MAX_DIAGNOSTICS` | `64` | Maximum scorer diagnostics, including the omission marker. |
 
 ## FactsLedger Contract
 
@@ -118,6 +132,10 @@ Before the first scorer output there is no numeric threshold or clarity-target a
 
 The LLM owns question wording, option design, user-facing topology proposals, facts-versus-decisions routing, Oracle semantic judgments, execution of reducer-returned panel personas, closure materiality judgment, and specification prose. The runtime owns schema validation, scoring math, state transition legality, policy order, coverage-target selection, panel state/counting, and complete state commits.
 
+Known gaps bound closure work before `run_closure`. At hard cap or early exit, nonempty `semanticCoverageGaps` returns incomplete `write_spec` directly, saving exactly one closure Oracle call and adding zero questions. Only a gap-free state can enter closure; `closure_passed` still requires the exact empty gap set.
+
+The default high-assurance profile remains `ambiguityThreshold: 0.05`, `roundCap: 30`, `softWarningRounds: 15`, `panelCeiling: 30`. The optional product discovery preset is `ambiguityThreshold: 0.10`, `roundCap: 15`, `softWarningRounds: 8`, `panelCeiling: 6`. It reduces expected model turns and panel calls but lowers numerical assurance; semantic/evidence closure and restatement are unchanged. Select once and never adapt the threshold mid-session.
+
 ## Running Tests
 
 From the repository root, `npm test` runs the exact six-suite chain: legacy runtime, FactsLedger, intent contract, scorer contract, transition, then documentation contract.
@@ -135,3 +153,5 @@ Run any suite directly with `node skills/ulw-interview/references/runtime/<suite
 3. Scores and transitions are deterministic for identical inputs, but Oracle semantic judgment, user-facing questions, panel findings, closure review, and specification synthesis remain model-owned.
 4. The cost and quality advantage of per-round Oracle scoring plus milestone panels over a simpler interview requires empirical benchmarking for each use case.
 5. Greenfield interviews reject the `context` scoring dimension; brownfield interviews require it.
+6. The reducer validates state consistency but does not cryptographically authenticate caller-supplied state. Bundled usage treats `result.state` as opaque trusted tool output and never exposes it to user or model subprompts; external embedders that cross a trust boundary must persist or authenticate state outside the model context.
+7. The transition manifest attests its projected component, score-presence, ID, gap, and ambiguity fields, not arbitrary artifact prose or file bytes. User provenance still depends on the bundled caller admitting only direct user confirmations.

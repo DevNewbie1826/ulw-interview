@@ -16,6 +16,13 @@ const transitionPath = join(runtimeDir, 'transition.mjs');
 const scorerPath = join(runtimeDir, 'scorer.mjs');
 const tests = [];
 const coverageMetrics = { illegalPhaseEventPairs: 0 };
+const MAX_COMPONENT_NAME_LENGTH = 120;
+const MAX_KNOWN_COMPONENTS = 64;
+const MAX_SERIALIZED_STATE_BYTES = 1024 * 1024;
+const MAX_SERIALIZED_EVENT_BYTES = 1024 * 1024;
+const MAX_SERIALIZED_PROJECTION_BYTES = 256 * 1024;
+const MAX_SERIALIZED_RESULT_BYTES = 3 * 1024 * 1024;
+const MAX_RAW_TRANSITION_BYTES = 2 * 1024 * 1024 + 4096;
 
 const CATEGORY_NAMES = [
   'outcome',
@@ -33,6 +40,7 @@ const EVENT_TYPES = [
   'round_scored',
   'panel_dispatched',
   'panel_completed',
+  'panel_failed',
   'closure_passed',
   'closure_rejected',
   'restate_confirmed',
@@ -101,6 +109,59 @@ function openCoverage() {
   };
 }
 
+function specManifest(state) {
+  const ambiguityByComponent = new Map(
+    (state.lastScorerOutput?.perComponent ?? []).map((component) => [component.name, component.ambiguity]),
+  );
+  const orderedActiveNames = [...state.topology].sort((left, right) => {
+    const ambiguityDifference = (ambiguityByComponent.get(right) ?? -1) - (ambiguityByComponent.get(left) ?? -1);
+    if (ambiguityDifference !== 0) return ambiguityDifference;
+    return left < right ? -1 : left > right ? 1 : 0;
+  });
+  const unresolvedGaps = [];
+  for (const component of orderedActiveNames) {
+    const value = state.coverageByComponent[component];
+    for (const category of ['outcome', 'must_haves', 'must_nots', 'out_of_scope', 'invariants']) {
+      if (value.coverage[category].status === 'open') {
+        unresolvedGaps.push({ component, category, itemId: null, reason: 'open' });
+      }
+    }
+    const linkedIds = new Set(value.acceptance_evidence.flatMap((evidence) => evidence.verifies));
+    const missingIds = ['must_haves', 'must_nots', 'invariants']
+      .flatMap((category) => value.coverage[category].items)
+      .filter((item) => item.state === 'active' && !linkedIds.has(item.id))
+      .map((item) => item.id)
+      .sort((left, right) => Number(left.slice(1)) - Number(right.slice(1)) || (left < right ? -1 : left > right ? 1 : 0));
+    for (const itemId of missingIds) {
+      unresolvedGaps.push({ component, category: 'acceptance_evidence', itemId, reason: 'missing_evidence' });
+    }
+  }
+  const componentEntry = (name, status) => ({
+    name,
+    status,
+    scored: state.scoreStateMatrix[name] !== null,
+    itemIds: CATEGORY_NAMES.flatMap((category) => (
+      state.coverageByComponent[name].coverage[category].items.map((item) => item.id)
+    )),
+    evidenceIds: state.coverageByComponent[name].acceptance_evidence.map((evidence) => evidence.id),
+  });
+  return {
+    components: [
+      ...state.topology.map((name) => componentEntry(name, 'active')),
+      ...state.deferredComponents.map((name) => componentEntry(name, 'deferred')),
+    ],
+    unresolvedGaps,
+    globalAmbiguity: state.priorAmbiguity,
+  };
+}
+
+function specWrittenEvent(state, kind, path) {
+  return {
+    type: 'spec_written',
+    payload: { kind, path, ...specManifest(state) },
+  };
+}
+
 function evidenceGapCoverage(seed = 1, round = 0) {
   const value = completeCoverage(seed, round);
   value.coverage.must_haves = {
@@ -116,6 +177,25 @@ function evidenceGapCoverage(seed = 1, round = 0) {
       supersedes: null,
     }],
   };
+  return value;
+}
+
+function manyMissingEvidenceCoverage(count) {
+  const value = completeCoverage(1);
+  value.coverage.must_haves = {
+    status: 'confirmed',
+    source: 'user',
+    source_round: 0,
+    items: Array.from({ length: count }, (_, index) => ({
+      id: `M${index + 1}`,
+      text: `Requirement ${index + 1}`,
+      source: 'user',
+      source_round: 0,
+      state: 'active',
+      supersedes: null,
+    })),
+  };
+  value.acceptance_evidence = [];
   return value;
 }
 
@@ -258,12 +338,43 @@ function completeWrite(options = {}) {
   return reduceTransition(restate.state, { type: 'restate_confirmed', payload: {} });
 }
 
+function manifestWrite() {
+  return completeWrite({
+    activeComponents: ['Second', 'First'],
+    deferredComponents: ['Later'],
+    value: 0.96,
+    coverageByComponent: {
+      Second: orderedHistoryCoverage(),
+      First: completeCoverage(3),
+      Later: openCoverage(),
+    },
+  });
+}
+
+function invalidManifestPayloads(validPayload) {
+  const mutations = [
+    (payload) => { delete payload.components; },
+    (payload) => { payload.components[0].extra = true; },
+    (payload) => { payload.components[0].scored = !payload.components[0].scored; },
+    (payload) => { payload.components.reverse(); },
+    (payload) => { payload.components[0].itemIds.reverse(); },
+    (payload) => { payload.components[0].evidenceIds.reverse(); },
+    (payload) => { payload.unresolvedGaps = [{ component: 'Second', category: 'outcome', itemId: null, reason: 'open' }]; },
+    (payload) => { payload.globalAmbiguity += 0.01; },
+  ];
+  return mutations.map((mutate) => {
+    const payload = clone(validPayload);
+    mutate(payload);
+    return payload;
+  });
+}
+
 function doneState(options = {}) {
   const write = completeWrite(options);
-  return reduceTransition(write.state, {
-    type: 'spec_written',
-    payload: { kind: 'complete', path: '.omo/specs/ulw-interview-interview.md' },
-  });
+  return reduceTransition(
+    write.state,
+    specWrittenEvent(write.state, 'complete', '.omo/specs/ulw-interview-interview.md'),
+  );
 }
 
 function incompleteState() {
@@ -276,10 +387,10 @@ function incompleteState() {
       target: { kind: 'dimension', component: 'API', dimension: 'goal' },
     },
   });
-  return reduceTransition(write.state, {
-    type: 'spec_written',
-    payload: { kind: 'incomplete', path: '.omo/specs/ulw-interview-incomplete.md' },
-  });
+  return reduceTransition(
+    write.state,
+    specWrittenEvent(write.state, 'incomplete', '.omo/specs/ulw-interview-incomplete.md'),
+  );
 }
 
 function hardCapCompletePath() {
@@ -287,9 +398,10 @@ function hardCapCompletePath() {
   const closure = reduceTransition(baseline.state, roundEvent(baseline.state, { value: 0.96 }));
   const restate = reduceTransition(closure.state, { type: 'closure_passed', payload: {} });
   const write = reduceTransition(restate.state, { type: 'restate_confirmed', payload: {} });
-  const done = reduceTransition(write.state, {
-    type: 'spec_written', payload: { kind: 'complete', path: '.omo/specs/ulw-interview-cap-complete.md' },
-  });
+  const done = reduceTransition(
+    write.state,
+    specWrittenEvent(write.state, 'complete', '.omo/specs/ulw-interview-cap-complete.md'),
+  );
   return { restate, write, done };
 }
 
@@ -468,6 +580,61 @@ test('topology rejects duplicates disappearance overlap and more than six active
   });
 });
 
+test('component names and total known components enforce exact inclusive bounds', () => {
+  const initialized = initialize().state;
+  const longestName = 'a'.repeat(MAX_COMPONENT_NAME_LENGTH);
+  const accepted = reduceTransition(initialized, {
+    type: 'topology_confirmed',
+    payload: {
+      activeComponents: [longestName],
+      deferredComponents: Array.from(
+        { length: MAX_KNOWN_COMPONENTS - 1 },
+        (_, index) => `Deferred-${index + 1}`,
+      ),
+    },
+  });
+  assert.equal(accepted.state.topology[0].length, MAX_COMPONENT_NAME_LENGTH);
+  assert.equal(accepted.state.topology.length + accepted.state.deferredComponents.length, MAX_KNOWN_COMPONENTS);
+
+  expectInvalid(initialized, {
+    type: 'topology_confirmed',
+    payload: { activeComponents: [`a${longestName}`], deferredComponents: [] },
+  });
+  expectInvalid(initialized, {
+    type: 'topology_confirmed',
+    payload: {
+      activeComponents: ['Active'],
+      deferredComponents: Array.from({ length: MAX_KNOWN_COMPONENTS }, (_, index) => `Overflow-${index + 1}`),
+    },
+  });
+
+  const fullBaseline = baselineState({
+    activeComponents: ['Active'],
+    deferredComponents: Array.from(
+      { length: MAX_KNOWN_COMPONENTS - 1 },
+      (_, index) => `Known-${index + 1}`,
+    ),
+  });
+  expectInvalid(fullBaseline.state, roundEvent(fullBaseline.state, {
+    scopeExpansion: { newComponents: ['OneTooMany'] },
+  }));
+  const baseline = baselineState();
+  expectInvalid(baseline.state, roundEvent(baseline.state, {
+    scopeExpansion: { newComponents: [`a${longestName}`] },
+  }));
+});
+
+test('topology rejects a 5000-component pathological payload before state growth', () => {
+  const initialized = initialize().state;
+  expectInvalid(initialized, {
+    type: 'topology_confirmed',
+    payload: {
+      activeComponents: ['Active'],
+      deferredComponents: Array.from({ length: 4999 }, (_, index) => `Deferred-${index + 1}`),
+    },
+  });
+});
+
 test('baseline commits complete snapshots and targets semantic gaps before dimensions', () => {
   const topology = topologyState({ activeComponents: ['Fuzzy', 'Clear'] });
   const coverageByComponent = {
@@ -572,17 +739,26 @@ test('round scoring rejects unasked sibling score mutation and permits asked sco
   assert.deepEqual(accepted.state.scoreStateMatrix[sibling], siblingScores);
 });
 
-test('hard cap commits the boundary round before closure and outranks scope expansion', () => {
+test('cap-round scope expansion is registered deferred and writes incomplete without closure', () => {
   const baseline = baselineState({ initialize: { roundCap: 1 } });
   const result = reduceTransition(baseline.state, roundEvent(baseline.state, {
-    scopeExpansion: { newComponents: ['IgnoredAtCap'] },
+    scopeExpansion: { newComponents: ['DiscoveredAtCap'] },
   }));
 
   assert.equal(result.state.currentRound, 1);
-  assert.equal(result.state.phase, 'CLOSURE');
-  assert.deepEqual(result.state.closureContext, { hardCap: true, earlyExit: false });
-  assert.deepEqual(result.action, { type: 'run_closure', payload: { hardCap: true } });
-  assert.equal('IgnoredAtCap' in result.state.coverageByComponent, false);
+  assert.equal(result.state.phase, 'WRITE');
+  assert.deepEqual(result.state.deferredComponents, ['DiscoveredAtCap']);
+  assert.equal(result.state.scoreStateMatrix.DiscoveredAtCap, null);
+  assert.deepEqual(result.state.coverageByComponent.DiscoveredAtCap, openCoverage());
+  assert.equal(result.state.scopeChangedSincePanel, true);
+  assert.deepEqual(result.action, { type: 'write_spec', payload: { kind: 'incomplete' } });
+  assert.deepEqual(specManifest(result.state).components.at(-1), {
+    name: 'DiscoveredAtCap',
+    status: 'deferred',
+    scored: false,
+    itemIds: [],
+    evidenceIds: [],
+  });
 });
 
 test('early exit uses strict high boundary and otherwise runs closure', () => {
@@ -626,26 +802,26 @@ test('closure_passed rejects normal closure with missing active requirement evid
   expectInvalid(forged, { type: 'closure_passed', payload: {} });
 });
 
-test('closure_passed rejects reachable hard-cap closure with open semantic gaps', () => {
+test('hard cap with deterministic semantic gaps writes incomplete without closure', () => {
   const baseline = baselineState({
     initialize: { roundCap: 1 },
     coverageByComponent: { API: openCoverage() },
   });
-  const closure = reduceTransition(baseline.state, roundEvent(baseline.state, { value: 0.96 }));
-  assert.deepEqual(closure.action, { type: 'run_closure', payload: { hardCap: true } });
-  assert.equal(closure.semanticCoverageGaps.length, 5);
-  expectInvalid(closure.state, { type: 'closure_passed', payload: {} });
+  const result = reduceTransition(baseline.state, roundEvent(baseline.state, { value: 0.96 }));
+  assert.equal(result.state.phase, 'WRITE');
+  assert.equal(result.semanticCoverageGaps.length, 5);
+  assert.deepEqual(result.action, { type: 'write_spec', payload: { kind: 'incomplete' } });
 });
 
-test('closure_passed rejects reachable early-exit closure with open semantic gaps', () => {
+test('early exit with deterministic semantic gaps writes incomplete without closure', () => {
   const baseline = baselineState({ coverageByComponent: { API: openCoverage() }, value: 0.8 });
-  const closure = reduceTransition(baseline.state, roundEvent(baseline.state, {
+  const result = reduceTransition(baseline.state, roundEvent(baseline.state, {
     value: 0.8,
     earlyExitRequested: true,
   }));
-  assert.deepEqual(closure.action, { type: 'run_closure', payload: { earlyExit: true } });
-  assert.equal(closure.semanticCoverageGaps.length, 5);
-  expectInvalid(closure.state, { type: 'closure_passed', payload: {} });
+  assert.equal(result.state.phase, 'WRITE');
+  assert.equal(result.semanticCoverageGaps.length, 5);
+  assert.deepEqual(result.action, { type: 'write_spec', payload: { kind: 'incomplete' } });
 });
 
 test('panel dispatch is ordered guarded counted and folded exactly once', () => {
@@ -721,6 +897,86 @@ test('panel findings retain and exactly match acknowledged personas in order', (
   const wrongPersona = clone(findings);
   wrongPersona[0].persona = 'simplifier';
   expectInvalid(acknowledged.state, { type: 'panel_completed', payload: { findings: wrongPersona } });
+});
+
+test('panel failure consumes the dispatch and resumes the pending target without findings', () => {
+  const baseline = baselineState({ value: 0.8 });
+  const dispatch = reduceTransition(baseline.state, roundEvent(baseline.state, { value: 0.5 }));
+  expectInvalid(dispatch.state, { type: 'panel_failed', payload: { reason: 'timeout' } });
+  const launchFailed = reduceTransition(dispatch.state, {
+    type: 'panel_failed', payload: { reason: 'dispatch_error' },
+  });
+  assert.equal(launchFailed.state.panelDispatchCount, dispatch.state.pendingPanelPersonas.length);
+  assert.equal(launchFailed.state.panelStage, 'none');
+  assert.deepEqual(launchFailed.state.askedTarget, dispatch.state.pendingTarget);
+  assert.deepEqual(launchFailed.action, {
+    type: 'ask_target', payload: { target: dispatch.state.pendingTarget },
+  });
+  const acknowledged = reduceTransition(dispatch.state, {
+    type: 'panel_dispatched', payload: { personas: dispatch.state.pendingPanelPersonas },
+  });
+  const failed = reduceTransition(acknowledged.state, {
+    type: 'panel_failed', payload: { reason: 'timeout' },
+  });
+  assert.equal(failed.state.panelDispatchCount, acknowledged.state.panelDispatchCount);
+  assert.equal(failed.state.panelStage, 'none');
+  assert.deepEqual(failed.state.pendingPanelPersonas, []);
+  assert.deepEqual(failed.state.askedTarget, acknowledged.state.pendingTarget);
+  assert.deepEqual(failed.action, {
+    type: 'ask_target', payload: { target: acknowledged.state.pendingTarget },
+  });
+  expectInvalid(acknowledged.state, {
+    type: 'panel_failed', payload: { reason: 'unknown' },
+  });
+  expectInvalid(acknowledged.state, {
+    type: 'panel_failed', payload: { reason: 'dispatch_error' },
+  });
+});
+
+test('panel history rejects unreachable partial dispatch ordering', () => {
+  const baseline = baselineState({ initialize: { panelCeiling: 5 }, value: 0.2 });
+  const firstDispatch = reduceTransition(baseline.state, roundEvent(baseline.state, { value: 0.5 }));
+  const firstAcknowledged = reduceTransition(firstDispatch.state, {
+    type: 'panel_dispatched', payload: { personas: firstDispatch.state.pendingPanelPersonas },
+  });
+  const findings = firstAcknowledged.state.pendingPanelPersonas.map((persona) => ({
+    persona, summary: 'finding', options: [], confidence: 'medium',
+  }));
+  let current = reduceTransition(firstAcknowledged.state, {
+    type: 'panel_completed', payload: { findings },
+  });
+  current = reduceTransition(current.state, roundEvent(current.state, { value: 0.5 }));
+  current = reduceTransition(current.state, roundEvent(current.state, { value: 0.5 }));
+  const secondDispatch = reduceTransition(current.state, roundEvent(current.state, { value: 0.8 }));
+  const secondAcknowledged = reduceTransition(secondDispatch.state, {
+    type: 'panel_dispatched', payload: { personas: secondDispatch.state.pendingPanelPersonas },
+  });
+  assert.deepEqual(secondAcknowledged.state.panelDispatchHistory.map((entry) => entry.personas.length), [3, 2]);
+
+  const forged = clone(secondAcknowledged.state);
+  forged.panelDispatchHistory[0].personas = ['researcher', 'contrarian'];
+  forged.panelDispatchHistory[1].personas = ['researcher', 'contrarian', 'simplifier'];
+  forged.pendingPanelPersonas = ['researcher', 'contrarian', 'simplifier'];
+  expectInvalid(forged, { type: 'panel_failed', payload: { reason: 'timeout' } });
+});
+
+test('panel history cannot be backfilled into a round without dispatch authorization', () => {
+  let current = baselineState({ value: 0.5 });
+  for (let round = 0; round < 4; round += 1) {
+    current = reduceTransition(current.state, roundEvent(current.state, { value: 0.5 }));
+  }
+  assert.deepEqual(current.state.panelDispatchHistory, []);
+  const forged = clone(current.state);
+  forged.panelDispatchHistory = [{
+    round: 1,
+    personas: ['researcher', 'contrarian', 'simplifier'],
+    panelCooldown: 2,
+    globalAmbiguity: forged.priorRounds[1],
+    band: forged.priorBandHistory[1],
+  }];
+  forged.panelDispatchCount = 3;
+  forged.priorPanelRound = 1;
+  expectInvalid(forged, { type: 'user_stop', payload: {} });
 });
 
 test('panel ceiling truncates personas and zero remaining skips panel', () => {
@@ -802,14 +1058,14 @@ test('closure pass and restate correction honor hard cap', () => {
 
 test('write acknowledgement matches kind persists path and controls post-spec continuation', () => {
   const write = completeWrite();
-  expectInvalid(write.state, {
-    type: 'spec_written',
-    payload: { kind: 'incomplete', path: '.omo/specs/ulw-interview-wrong-kind.md' },
-  });
-  const done = reduceTransition(write.state, {
-    type: 'spec_written',
-    payload: { kind: 'complete', path: '.omo/specs/ulw-interview-final.md' },
-  });
+  expectInvalid(
+    write.state,
+    specWrittenEvent(write.state, 'incomplete', '.omo/specs/ulw-interview-wrong-kind.md'),
+  );
+  const done = reduceTransition(
+    write.state,
+    specWrittenEvent(write.state, 'complete', '.omo/specs/ulw-interview-final.md'),
+  );
   assert.equal(done.state.phase, 'DONE');
   assert.deepEqual(done.action, {
     type: 'offer_post_spec',
@@ -843,13 +1099,63 @@ test('spec_written accepts only a contained safe ulw-interview spec path', () =>
     '.omo/specs/ulw-interview-Upper.md',
     `.omo/specs/ulw-interview-${'a'.repeat(61)}.md`,
   ]) {
-    expectInvalid(write.state, { type: 'spec_written', payload: { kind: 'complete', path } });
+    expectInvalid(write.state, specWrittenEvent(write.state, 'complete', path));
   }
+  const accepted = reduceTransition(
+    write.state,
+    specWrittenEvent(write.state, 'complete', '.omo/specs/ulw-interview-safe-slug.md'),
+  );
+  assert.equal(accepted.state.writtenSpecPath, '.omo/specs/ulw-interview-safe-slug.md');
+});
+
+test('spec_written requires the exact ordered state-derived manifest', () => {
+  const write = manifestWrite();
+  const manifest = specManifest(write.state);
+  assert.deepEqual(manifest.components.map((component) => component.name), ['Second', 'First', 'Later']);
+  assert.deepEqual(manifest.components[0].itemIds, ['O1', 'M1', 'M2']);
+  assert.deepEqual(manifest.components[0].evidenceIds, ['E1', 'E2']);
+  assert.equal(manifest.components[0].scored, true);
+  assert.equal(manifest.components.at(-1).scored, false);
+  const validPayload = {
+    kind: 'complete',
+    path: '.omo/specs/ulw-interview-manifest.md',
+    ...manifest,
+  };
+  const accepted = reduceTransition(write.state, { type: 'spec_written', payload: validPayload });
+  assert.equal(accepted.state.phase, 'DONE');
+
+  for (const payload of invalidManifestPayloads(validPayload)) {
+    expectInvalid(write.state, { type: 'spec_written', payload });
+  }
+});
+
+test('spec_written treats JSON object member order as non-semantic', () => {
+  const write = manifestWrite();
+  const manifest = specManifest(write.state);
+  const components = manifest.components.map((component) => ({
+    evidenceIds: component.evidenceIds,
+    itemIds: component.itemIds,
+    scored: component.scored,
+    status: component.status,
+    name: component.name,
+  }));
+  const unresolvedGaps = manifest.unresolvedGaps.map((gap) => ({
+    reason: gap.reason,
+    itemId: gap.itemId,
+    category: gap.category,
+    component: gap.component,
+  }));
   const accepted = reduceTransition(write.state, {
     type: 'spec_written',
-    payload: { kind: 'complete', path: '.omo/specs/ulw-interview-safe-slug.md' },
+    payload: {
+      globalAmbiguity: manifest.globalAmbiguity,
+      unresolvedGaps,
+      components,
+      path: '.omo/specs/ulw-interview-key-order.md',
+      kind: 'complete',
+    },
   });
-  assert.equal(accepted.state.writtenSpecPath, '.omo/specs/ulw-interview-safe-slug.md');
+  assert.equal(accepted.state.phase, 'DONE');
 });
 
 test('hard-cap complete spec hides continuation', () => {
@@ -857,10 +1163,10 @@ test('hard-cap complete spec hides continuation', () => {
   const closure = reduceTransition(baseline.state, roundEvent(baseline.state, { value: 0.96 }));
   const restate = reduceTransition(closure.state, { type: 'closure_passed', payload: {} });
   const write = reduceTransition(restate.state, { type: 'restate_confirmed', payload: {} });
-  const done = reduceTransition(write.state, {
-    type: 'spec_written',
-    payload: { kind: 'complete', path: '.omo/specs/ulw-interview-cap.md' },
-  });
+  const done = reduceTransition(
+    write.state,
+    specWrittenEvent(write.state, 'complete', '.omo/specs/ulw-interview-cap.md'),
+  );
   assert.equal(done.state.hardCapReached, true);
   assert.equal(done.action.payload.allowContinue, false);
   expectInvalid(done.state, { type: 'continue_interview', payload: {} });
@@ -1183,10 +1489,10 @@ test('user_stop is legal from initial and reopened BASELINE with pending null sc
   assert.equal(reopenedStop.state.phase, 'WRITE');
   assert.deepEqual(reopenedStop.state.pendingBaselineComponents, ['Pending']);
   assert.deepEqual(reopenedStop.action, { type: 'write_spec', payload: { kind: 'incomplete' } });
-  const incomplete = reduceTransition(reopenedStop.state, {
-    type: 'spec_written',
-    payload: { kind: 'incomplete', path: '.omo/specs/ulw-interview-baseline-stop.md' },
-  });
+  const incomplete = reduceTransition(
+    reopenedStop.state,
+    specWrittenEvent(reopenedStop.state, 'incomplete', '.omo/specs/ulw-interview-baseline-stop.md'),
+  );
   assert.equal(incomplete.state.phase, 'INCOMPLETE');
   assert.deepEqual(incomplete.state.pendingBaselineComponents, ['Pending']);
 });
@@ -1322,8 +1628,20 @@ test('panel dispatch history is canonical derived and cooldown ordered', () => {
     type: 'panel_dispatched', payload: { personas: secondDispatch.state.pendingPanelPersonas },
   });
   assert.deepEqual(secondAcknowledged.state.panelDispatchHistory, [
-    { round: 1, personas: ['researcher', 'contrarian', 'simplifier'], panelCooldown: 2 },
-    { round: 4, personas: ['researcher', 'contrarian', 'simplifier'], panelCooldown: 2 },
+    {
+      round: 1,
+      personas: ['researcher', 'contrarian', 'simplifier'],
+      panelCooldown: 2,
+      globalAmbiguity: 0.5,
+      band: 'progress',
+    },
+    {
+      round: 4,
+      personas: ['researcher', 'contrarian', 'simplifier'],
+      panelCooldown: 2,
+      globalAmbiguity: 0.2,
+      band: 'refined',
+    },
   ]);
   assert.equal(secondAcknowledged.state.panelDispatchCount, 6);
   assert.equal(secondAcknowledged.state.priorPanelRound, 4);
@@ -1387,9 +1705,9 @@ test('stored scorer history flags must match the committed observation sequence'
 test('hard-cap closure context cannot be downgraded before closure passes', () => {
   const baseline = baselineState({ initialize: { roundCap: 1 } });
   const generated = reduceTransition(baseline.state, roundEvent(baseline.state, { value: 0.96 }));
-  assert.deepEqual(generated.state.closureContext, { hardCap: true, earlyExit: false });
+  assert.deepEqual(generated.state.closureContext, { hardCap: true, earlyExit: false, stage: 'pending' });
   const downgraded = clone(generated.state);
-  downgraded.closureContext = { hardCap: false, earlyExit: false };
+  downgraded.closureContext = { hardCap: false, earlyExit: false, stage: 'pending' };
   expectInvalid(downgraded, { type: 'closure_passed', payload: {} });
 });
 
@@ -1407,9 +1725,10 @@ test('cap-round complete WRITE cannot downgrade hardCapReached', () => {
   assert.equal(write.state.hardCapReached, true);
   const downgraded = clone(write.state);
   downgraded.hardCapReached = false;
-  expectInvalid(downgraded, {
-    type: 'spec_written', payload: { kind: 'complete', path: '.omo/specs/ulw-interview-forged.md' },
-  });
+  expectInvalid(
+    downgraded,
+    specWrittenEvent(downgraded, 'complete', '.omo/specs/ulw-interview-forged.md'),
+  );
 });
 
 test('cap-round DONE cannot re-enable continuation by downgrading hardCapReached', () => {
@@ -1505,6 +1824,126 @@ test('strict full-state validation rejects unknown missing and inconsistent tran
   }
 });
 
+test('unscored state cannot forge WRITE or terminal artifact phases', () => {
+  for (const phase of ['WRITE', 'DONE', 'INCOMPLETE']) {
+    const forged = clone(initialize().state);
+    forged.phase = phase;
+    if (phase === 'WRITE') forged.pendingWriteKind = 'complete';
+    if (phase !== 'WRITE') forged.writtenSpecPath = '.omo/specs/ulw-interview-forged.md';
+    expectInvalid(forged, { type: 'finish', payload: {} });
+  }
+});
+
+test('DONE requires reachable closure and restatement provenance', () => {
+  for (const baseline of [
+    baselineState({ coverageByComponent: { API: openCoverage() }, value: 0.5 }),
+    baselineState({ value: 0.5 }),
+  ]) {
+    const forged = clone(baseline.state);
+    forged.phase = 'DONE';
+    forged.askedTarget = null;
+    forged.writtenSpecPath = '.omo/specs/ulw-interview-forged-done.md';
+    expectInvalid(forged, { type: 'start_planning', payload: {} });
+  }
+  const closure = readyClosure();
+  const forgedClosure = clone(closure.state);
+  forgedClosure.phase = 'DONE';
+  forgedClosure.writtenSpecPath = '.omo/specs/ulw-interview-forged-closure.md';
+  expectInvalid(forgedClosure, { type: 'start_planning', payload: {} });
+});
+
+test('serialized state accepts exactly one MiB and rejects one byte over at input', () => {
+  const baseline = baselineState();
+  const exact = clone(baseline.state);
+  const text = exact.coverageByComponent.API.coverage.outcome.items[0];
+  text.text = 'x';
+  const remainingBytes = MAX_SERIALIZED_STATE_BYTES - Buffer.byteLength(JSON.stringify(exact));
+  assert.ok(remainingBytes > 0);
+  text.text += 'x'.repeat(remainingBytes);
+  assert.equal(Buffer.byteLength(JSON.stringify(exact)), MAX_SERIALIZED_STATE_BYTES);
+
+  const accepted = reduceTransition(exact, { type: 'user_stop', payload: {} });
+  assert.equal(accepted.state.phase, 'WRITE');
+
+  const overflow = clone(exact);
+  overflow.coverageByComponent.API.coverage.outcome.items[0].text += 'x';
+  assert.equal(Buffer.byteLength(JSON.stringify(overflow)), MAX_SERIALIZED_STATE_BYTES + 1);
+  expectInvalid(overflow, { type: 'user_stop', payload: {} });
+});
+
+test('produced state rejects a round commit that crosses one MiB', () => {
+  const baseline = baselineState();
+  const coverageByComponent = clone(baseline.state.coverageByComponent);
+  coverageByComponent.API.coverage.preferences = {
+    status: 'confirmed',
+    source: 'user',
+    source_round: 1,
+    items: [{
+      id: 'P2',
+      text: 'x'.repeat(MAX_SERIALIZED_STATE_BYTES),
+      source: 'user',
+      source_round: 1,
+      state: 'active',
+      supersedes: null,
+    }],
+  };
+  expectInvalid(baseline.state, roundEvent(baseline.state, { coverageByComponent }));
+});
+
+test('manifest projection budget keeps accepted WRITE states acknowledgeable', () => {
+  const topology = topologyState({ initialize: { roundCap: 1 } });
+  const scorerOutput = score(['API'], { currentRound: 0, value: 0.5 });
+  const acceptedCoverage = { API: manyMissingEvidenceCoverage(2000) };
+  const baseline = reduceTransition(topology.state, {
+    type: 'baseline_scored', payload: { scorerOutput, coverageByComponent: acceptedCoverage },
+  });
+  const write = reduceTransition(baseline.state, { type: 'user_stop', payload: {} });
+  const event = specWrittenEvent(
+    write.state,
+    'incomplete',
+    '.omo/specs/ulw-interview-large-projection.md',
+  );
+  assert.ok(Buffer.byteLength(JSON.stringify(event)) <= MAX_SERIALIZED_EVENT_BYTES);
+  assert.ok(Buffer.byteLength(JSON.stringify(specManifest(write.state))) <= MAX_SERIALIZED_PROJECTION_BYTES);
+  assert.ok(Buffer.byteLength(JSON.stringify(write)) <= MAX_SERIALIZED_RESULT_BYTES);
+  const acknowledged = reduceTransition(write.state, event);
+  assert.equal(acknowledged.state.phase, 'INCOMPLETE');
+
+  const oversizedCoverage = { API: manyMissingEvidenceCoverage(6000) };
+  expectInvalid(topology.state, {
+    type: 'baseline_scored', payload: { scorerOutput, coverageByComponent: oversizedCoverage },
+  });
+});
+
+test('serialized events accept one MiB and reject one byte over', () => {
+  const baseline = baselineState({ value: 0.8 });
+  const dispatch = reduceTransition(baseline.state, roundEvent(baseline.state, { value: 0.5 }));
+  const acknowledged = reduceTransition(dispatch.state, {
+    type: 'panel_dispatched',
+    payload: { personas: dispatch.state.pendingPanelPersonas },
+  });
+  const event = {
+    type: 'panel_completed',
+    payload: {
+      findings: acknowledged.state.pendingPanelPersonas.map((persona) => ({
+        persona,
+        summary: '',
+        options: [],
+        confidence: 'medium',
+      })),
+    },
+  };
+  event.payload.findings[0].summary = 'x'.repeat(
+    MAX_SERIALIZED_EVENT_BYTES - Buffer.byteLength(JSON.stringify(event)),
+  );
+  assert.equal(Buffer.byteLength(JSON.stringify(event)), MAX_SERIALIZED_EVENT_BYTES);
+  const accepted = reduceTransition(acknowledged.state, event);
+  assert.equal(accepted.action.type, 'ask_target');
+  event.payload.findings[0].summary += 'x';
+  assert.equal(Buffer.byteLength(JSON.stringify(event)), MAX_SERIALIZED_EVENT_BYTES + 1);
+  expectInvalid(acknowledged.state, event);
+});
+
 test('event envelopes payloads targets findings and refine output reject malformed data', () => {
   const baseline = baselineState();
   const malformed = [
@@ -1595,7 +2034,7 @@ test('every non-matrix phase and event pairing is illegal', () => {
   const legal = {
     TOPOLOGY: new Set(['topology_confirmed', 'user_stop']),
     BASELINE: new Set(['baseline_scored', 'user_stop']),
-    ROUND: new Set(['round_scored', 'panel_dispatched', 'panel_completed', 'user_stop']),
+    ROUND: new Set(['round_scored', 'panel_dispatched', 'panel_completed', 'panel_failed', 'user_stop']),
     CLOSURE: new Set(['closure_passed', 'closure_rejected', 'user_stop']),
     RESTATE: new Set(['restate_confirmed', 'restate_corrected', 'user_stop']),
     WRITE: new Set(['spec_written']),
@@ -1611,7 +2050,7 @@ test('every non-matrix phase and event pairing is illegal', () => {
       rejected += 1;
     }
   }
-  assert.equal(rejected, 117);
+  assert.equal(rejected, 125);
   coverageMetrics.illegalPhaseEventPairs = rejected;
 });
 
@@ -1654,6 +2093,16 @@ test('CLI errors emit no stdout and cannot print misleading success', () => {
   assert.doesNotMatch(invalidEvent.stderr, /PASS|success|ok/i);
 });
 
+test('CLI rejects oversized raw input before JSON parsing', () => {
+  const oversized = runCli('x'.repeat(MAX_RAW_TRANSITION_BYTES + 1));
+  assert.equal(oversized.status, 1);
+  assert.equal(oversized.stdout, '');
+  assert.equal(
+    oversized.stderr,
+    `transition.mjs: input exceeds ${MAX_RAW_TRANSITION_BYTES} bytes\n`,
+  );
+});
+
 test('reducer source contains no clock randomness environment cwd subprocess network or persistence reads', () => {
   const source = readFileSync(transitionPath, 'utf8');
   const forbidden = [
@@ -1670,21 +2119,12 @@ test('reducer source contains no clock randomness environment cwd subprocess net
   for (const pattern of forbidden) assert.doesNotMatch(source, pattern);
 });
 
-test('every scenario driver asserts its exact advertised phase and action', () => {
-  const source = readFileSync(transitionPath.replace('transition.mjs', 'transition.test.mjs'), 'utf8');
-  const scenarioSource = source.slice(source.lastIndexOf('function happyScenario()'));
-  const expectedAssertions = [
-    "assertScenarioOutcome(done, 'DONE', 'offer_post_spec')",
-    "assertScenarioOutcome(result, 'ROUND', 'ask_target')",
-    "assertScenarioOutcome(incomplete, 'INCOMPLETE', 'stop')",
-    "assertScenarioOutcome(planning, 'DONE', 'start_planning')",
-    "assertScenarioOutcome(relocked, 'BASELINE', 'run_baseline')",
-    "assertScenarioOutcome(stopped, 'WRITE', 'write_spec')",
-    "assertScenarioOutcome(corrected, 'WRITE', 'write_spec')",
-    "assertScenarioOutcome(stopped, 'WRITE', 'write_spec')",
-    "assertScenarioOutcome(stopped, 'STOPPED', 'stop')",
-  ];
-  for (const assertion of expectedAssertions) assert.ok(scenarioSource.includes(assertion), assertion);
+test('every scenario driver executes and reports its advertised name', () => {
+  for (const [name, scenario] of scenarios) {
+    const output = scenario();
+    assert.equal(output.status, 'PASS', name);
+    assert.equal(output.scenario, name);
+  }
 });
 
 function assertScenarioOutcome(result, expectedPhase, expectedAction) {
@@ -1812,6 +2252,149 @@ function stopLowScenario() {
   return { status: 'PASS', scenario: 'stop-low', finalPhase: stopped.state.phase, action: stopped.action.type };
 }
 
+function capScopeExpansionScenario() {
+  const baseline = baselineState({ initialize: { roundCap: 1 } });
+  const result = reduceTransition(baseline.state, roundEvent(baseline.state, {
+    scopeExpansion: { newComponents: ['DiscoveredAtCap'] },
+  }));
+  assertScenarioOutcome(result, 'WRITE', 'write_spec');
+  assert.deepEqual(result.state.deferredComponents, ['DiscoveredAtCap']);
+  assert.equal(result.state.scoreStateMatrix.DiscoveredAtCap, null);
+  assert.deepEqual(result.state.coverageByComponent.DiscoveredAtCap, openCoverage());
+  assert.equal(result.state.scopeChangedSincePanel, true);
+  return {
+    status: 'PASS',
+    scenario: 'cap-scope-expansion',
+    finalPhase: result.state.phase,
+    action: result.action.type,
+    deferredComponents: result.state.deferredComponents,
+    deferredScore: result.state.scoreStateMatrix.DiscoveredAtCap,
+    scopeChangedSincePanel: result.state.scopeChangedSincePanel,
+    semanticGaps: result.semanticCoverageGaps.length,
+  };
+}
+
+function gapShortCircuitScenario() {
+  const hardCapBaseline = baselineState({
+    initialize: { roundCap: 1 },
+    coverageByComponent: { API: openCoverage() },
+  });
+  const hardCap = reduceTransition(
+    hardCapBaseline.state,
+    roundEvent(hardCapBaseline.state, { value: 0.96 }),
+  );
+  assertScenarioOutcome(hardCap, 'WRITE', 'write_spec');
+  const earlyBaseline = baselineState({ coverageByComponent: { API: openCoverage() }, value: 0.8 });
+  const earlyExit = reduceTransition(earlyBaseline.state, roundEvent(earlyBaseline.state, {
+    value: 0.8,
+    earlyExitRequested: true,
+  }));
+  assertScenarioOutcome(earlyExit, 'WRITE', 'write_spec');
+  return {
+    status: 'PASS',
+    scenario: 'gap-short-circuit',
+    hardCap: { action: hardCap.action.type, gaps: hardCap.semanticCoverageGaps.length },
+    earlyExit: { action: earlyExit.action.type, gaps: earlyExit.semanticCoverageGaps.length },
+    closureCalls: 0,
+  };
+}
+
+function panelFailureScenario() {
+  const baseline = baselineState({ value: 0.8 });
+  const dispatch = reduceTransition(baseline.state, roundEvent(baseline.state, { value: 0.5 }));
+  const acknowledged = reduceTransition(dispatch.state, {
+    type: 'panel_dispatched', payload: { personas: dispatch.state.pendingPanelPersonas },
+  });
+  const result = reduceTransition(acknowledged.state, {
+    type: 'panel_failed', payload: { reason: 'invalid_result' },
+  });
+  assertScenarioOutcome(result, 'ROUND', 'ask_target');
+  assert.equal(result.state.panelStage, 'none');
+  assert.deepEqual(result.action.payload.target, acknowledged.state.pendingTarget);
+  return {
+    status: 'PASS',
+    scenario: 'panel-failure',
+    finalPhase: result.state.phase,
+    action: result.action.type,
+    panelDispatchCount: result.state.panelDispatchCount,
+  };
+}
+
+function specManifestScenario() {
+  const write = manifestWrite();
+  const manifest = specManifest(write.state);
+  const validEvent = specWrittenEvent(
+    write.state,
+    'complete',
+    '.omo/specs/ulw-interview-manifest-scenario.md',
+  );
+  const invalidPayloads = invalidManifestPayloads(validEvent.payload);
+  for (const payload of invalidPayloads) {
+    expectInvalid(write.state, { type: 'spec_written', payload });
+  }
+  const done = reduceTransition(
+    write.state,
+    validEvent,
+  );
+  assertScenarioOutcome(done, 'DONE', 'offer_post_spec');
+  return {
+    status: 'PASS',
+    scenario: 'spec-manifest',
+    finalPhase: done.state.phase,
+    action: done.action.type,
+    manifest,
+    forgeriesRejected: invalidPayloads.length,
+  };
+}
+
+function boundsScenario() {
+  const initialized = initialize().state;
+  const atLimit = reduceTransition(initialized, {
+    type: 'topology_confirmed',
+    payload: {
+      activeComponents: ['Active'],
+      deferredComponents: Array.from(
+        { length: MAX_KNOWN_COMPONENTS - 1 },
+        (_, index) => `Deferred-${index + 1}`,
+      ),
+    },
+  });
+  assertScenarioOutcome(atLimit, 'BASELINE', 'run_baseline');
+  expectInvalid(initialized, {
+    type: 'topology_confirmed',
+    payload: {
+      activeComponents: ['Active'],
+      deferredComponents: Array.from({ length: MAX_KNOWN_COMPONENTS }, (_, index) => `Overflow-${index + 1}`),
+    },
+  });
+  expectInvalid(initialized, {
+    type: 'topology_confirmed',
+    payload: {
+      activeComponents: ['Active'],
+      deferredComponents: Array.from({ length: 4999 }, (_, index) => `Pathological-${index + 1}`),
+    },
+  });
+  const exactState = clone(baselineState().state);
+  const item = exactState.coverageByComponent.API.coverage.outcome.items[0];
+  item.text = 'x';
+  item.text += 'x'.repeat(MAX_SERIALIZED_STATE_BYTES - Buffer.byteLength(JSON.stringify(exactState)));
+  const exactAccepted = reduceTransition(exactState, { type: 'user_stop', payload: {} });
+  assertScenarioOutcome(exactAccepted, 'WRITE', 'write_spec');
+  const overflowState = clone(exactState);
+  overflowState.coverageByComponent.API.coverage.outcome.items[0].text += 'x';
+  expectInvalid(overflowState, { type: 'user_stop', payload: {} });
+  return {
+    status: 'PASS',
+    scenario: 'bounds',
+    maxNameChars: MAX_COMPONENT_NAME_LENGTH,
+    knownAtLimit: atLimit.state.topology.length + atLimit.state.deferredComponents.length,
+    knownOverflowRejected: true,
+    pathological5000Rejected: true,
+    exactStateBytes: Buffer.byteLength(JSON.stringify(exactState)),
+    overflowStateBytes: Buffer.byteLength(JSON.stringify(overflowState)),
+  };
+}
+
 const scenarios = new Map([
   ['happy', happyScenario],
   ['semantic-gap', semanticGapScenario],
@@ -1822,6 +2405,11 @@ const scenarios = new Map([
   ['restate-correction', restateCorrectionScenario],
   ['stop-high', stopHighScenario],
   ['stop-low', stopLowScenario],
+  ['cap-scope-expansion', capScopeExpansionScenario],
+  ['gap-short-circuit', gapShortCircuitScenario],
+  ['panel-failure', panelFailureScenario],
+  ['spec-manifest', specManifestScenario],
+  ['bounds', boundsScenario],
 ]);
 
 function executeScenario(name) {

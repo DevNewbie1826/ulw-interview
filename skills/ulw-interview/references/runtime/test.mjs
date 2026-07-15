@@ -12,6 +12,8 @@ import { dirname, join } from 'node:path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCORER = join(__dirname, 'scorer.mjs');
 const VALIDATE = join(__dirname, 'validate.mjs');
+const REFINE = join(__dirname, 'refineGate.mjs');
+const MAX_INPUT_BYTES = 1024 * 1024;
 
 function runScript(scriptPath, stdin) {
   const r = spawnSync('node', [scriptPath], { input: stdin, encoding: 'utf8' });
@@ -209,6 +211,58 @@ test('greenfield all-0.95 → ready:true', () => {
   assert.equal(out.ready, true);
   assert.equal(out.band, 'ready');
   assert.ok(out.globalAmbiguity <= 0.05 + 1e-9);
+});
+
+test('scorer rejects oversized stdin before JSON parsing', () => {
+  const r = runScript(SCORER, 'x'.repeat(MAX_INPUT_BYTES + 1));
+  assert.equal(r.status, 1);
+  assert.equal(r.stdout, '');
+  assert.equal(r.stderr, `scorer.mjs: Input exceeds ${MAX_INPUT_BYTES} bytes.\n`);
+});
+
+test('scorer bounds and flushes large schema diagnostics', () => {
+  const input = {
+    type: 'greenfield',
+    threshold: 0.05,
+    components: Array.from({ length: 5000 }, (_, index) => ({
+      name: index,
+      scores: {},
+    })),
+  };
+  const r = runScript(SCORER, JSON.stringify(input));
+  assert.equal(r.status, 1);
+  assert.equal(r.stdout, '');
+  assert.ok(Buffer.byteLength(r.stderr) < 65536);
+  assert.ok(r.stderr.endsWith('\n'));
+  assert.match(r.stderr, /additional errors omitted/);
+});
+
+test('scorer bounds diagnostic memory before materializing omitted errors', () => {
+  const input = JSON.stringify({
+    type: 'greenfield',
+    threshold: 0.05,
+    components: Array.from({ length: 6000 }, (_, index) => ({
+      name: `c${index}`,
+      scores: { goal: 1, constraints: 1, criteria: 1 },
+    })),
+    triggers: Array.from({ length: 6000 }, (_, index) => ({
+      component: `missing${index}`,
+      dim: 'goal',
+      type: 'A',
+    })),
+  });
+  assert.ok(Buffer.byteLength(input) <= MAX_INPUT_BYTES);
+  const r = spawnSync(process.execPath, ['--max-old-space-size=64', SCORER], {
+    input,
+    encoding: 'utf8',
+    timeout: 30000,
+  });
+  assert.equal(r.signal, null, `scorer aborted with ${r.signal}: ${r.stderr}`);
+  assert.equal(r.status, 1);
+  assert.equal(r.stdout, '');
+  assert.ok(Buffer.byteLength(r.stderr) < 65536);
+  assert.ok(r.stderr.endsWith('\n'));
+  assert.match(r.stderr, /additional errors omitted/);
 });
 
 test('validate rejects non-numeric score with ok:false', () => {
@@ -770,6 +824,13 @@ test('malformed JSON exits 1 with stderr', () => {
   assert.equal(r.status, 1);
   assert.notEqual(r.stderr.length, 0);
   assert.match(r.stderr, /Invalid JSON/);
+});
+
+test('refine gate rejects oversized stdin before JSON parsing', () => {
+  const r = runScript(REFINE, 'x'.repeat(MAX_INPUT_BYTES + 1));
+  assert.equal(r.status, 1);
+  assert.equal(r.stdout, '');
+  assert.equal(r.stderr, `Input exceeds ${MAX_INPUT_BYTES} bytes\n`);
 });
 
 // ---------- factsLedger.mjs ----------

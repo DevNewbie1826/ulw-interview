@@ -13,17 +13,21 @@ The scorer classifies progress bands, but the caller never interprets band chang
 - **`simplifier`** — probes whether complexity can be removed: "What is the simplest version that is still valuable?"
 - **`architect`** — checks system shape, ownership, and integration impact after scope change.
 
-Dispatch each and only returned persona in `dispatch_panel.payload.personas`, in that order. Do not add, reorder, or retry a persona outside the returned list. Give each an independent copy of prompt-safe context, including the immutable full interview ID registry and all component ID ownership, transcript summary, current scores, semantic coverage, and locked topology. Ask for one concrete blind spot or unsettled decision, suggested options for the next question, and confidence.
+Launch each and only returned persona in `dispatch_panel.payload.personas` concurrently in a single parallel dispatch batch. Do not await one persona before launching the next. Do not add, reorder, or retry a persona outside the returned list. Give each call an independent copy of context, with no persona's prompt or mutable response shared with another. That context includes the immutable full interview ID registry and all component ID ownership, transcript summary, current scores, semantic coverage, and locked topology. Ask for one concrete blind spot or unsettled decision, suggested options for the next question, and confidence.
 
 ## Acknowledgement protocol
 
-1. After all requested calls are dispatched, emit `panel_dispatched`; acknowledge the returned `personas` list exactly.
-2. Commit the reducer response. It updates `panelDispatchCount += personas.length` and returns `await_panel_results`.
-3. Wait for every acknowledged persona. Do not ask or score while waiting.
-4. Validate one `{persona,summary,options,confidence}` finding for each acknowledged persona in the same order as the acknowledged `personas` list. The `persona` must exactly equal that position's acknowledged persona. Then emit `panel_completed` with the complete ordered findings array.
-5. Commit the returned `ask_target` action. Fold its findings into that one user-facing question.
+1. Attempt the single parallel dispatch batch. If any launch fails before all calls are launched, do not emit `panel_dispatched`; emit `panel_failed` with reason `dispatch_error` directly from `awaiting_dispatch`. The reducer atomically records the full intended persona batch as consumed, clears panel state, and returns the pending target.
+2. After all requested calls launch successfully, emit `panel_dispatched`; acknowledge the returned `personas` list exactly.
+3. Commit the reducer response. It records the full persona batch, updates `panelDispatchCount += personas.length`, and returns `await_panel_results`.
+4. Treat `await_panel_results` as an all-results barrier. Wait for every acknowledged persona until each tool call reaches its configured 120-second result timeout. Do not ask, score, or emit partial completion while waiting.
+5. Validate one `{persona,summary,options,confidence}` finding for each acknowledged persona in the same order as the acknowledged list. Arrival order is irrelevant: reassemble findings in reducer-returned persona order. The `persona` must exactly equal that position's acknowledged persona. Only after every result passes validation, emit `panel_completed` with the complete ordered findings array.
+6. If an acknowledged call times out or returns an invalid result, emit `panel_failed` with reason `timeout` or `invalid_result` and discard all partial findings. Failed batches remain counted and the dispatch count is not rolled back. Commit the returned `ask_target` for the pending target; it has no findings and still produces exactly one user-facing question.
+7. Otherwise commit the `ask_target` returned by `panel_completed` and fold its findings into that one user-facing question.
 
-No caller event may bypass or reverse this acknowledgement sequence. The reducer owns persona truncation, count updates, scope-change acknowledgement, and panel state.
+No caller event may bypass or reverse this acknowledgement sequence. The reducer owns persona truncation, count updates, scope-change acknowledgement, panel failure recovery, and panel state.
+
+For persona latencies `L_i`, serial critical-path time is `sum(L_i)` and parallel critical-path time is `max(L_i)`. Exact critical-path savings are `sum(L_i) - max(L_i)`; the persona call count remains unchanged.
 
 ## Folding findings
 

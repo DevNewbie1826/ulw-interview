@@ -1,17 +1,32 @@
 #!/usr/bin/env node
 
-import { readFileSync } from 'node:fs';
-
 const THRESHOLD = 0.05;
 const THRESHOLD_EPSILON = 1e-12;
+const MAX_INPUT_BYTES = 1024 * 1024;
 
-function readInput() {
-  const raw = readFileSync(0, 'utf8');
+class RefineFailure extends Error {}
+
+function fail(message) {
+  throw new RefineFailure(message);
+}
+
+async function readInput() {
+  const chunks = [];
+  let inputBytes = 0;
+  for await (const chunk of process.stdin) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    inputBytes += bytes.length;
+    if (inputBytes > MAX_INPUT_BYTES) {
+      process.stdin.destroy();
+      fail(`Input exceeds ${MAX_INPUT_BYTES} bytes`);
+    }
+    chunks.push(bytes);
+  }
+  const raw = Buffer.concat(chunks).toString('utf8');
   try {
     return JSON.parse(raw);
   } catch {
-    process.stderr.write('Invalid JSON\n');
-    process.exit(1);
+    fail('Invalid JSON');
   }
 }
 
@@ -19,8 +34,8 @@ function hasOwnKey(object, key) {
   return Object.prototype.hasOwnProperty.call(object, key);
 }
 
-function main() {
-  const input = readInput();
+async function main() {
+  const input = await readInput();
   const priorScores = input?.priorScores;
   const currentScores = input?.currentScores;
   const validationScoreClamped = input?.validationScoreClamped === true;
@@ -51,4 +66,13 @@ function main() {
   process.stdout.write(JSON.stringify({ shouldRefine: true, reason: 'low_delta_and_clamped', target: targetedDim }));
 }
 
-main();
+try {
+  await main();
+} catch (error) {
+  if (error instanceof RefineFailure) {
+    process.stderr.write(`${error.message}\n`);
+    process.exitCode = 1;
+  } else {
+    throw error;
+  }
+}

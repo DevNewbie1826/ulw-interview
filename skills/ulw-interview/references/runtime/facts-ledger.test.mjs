@@ -10,6 +10,7 @@ import { spawnSync } from 'node:child_process';
 const runtimeDir = dirname(fileURLToPath(import.meta.url));
 const factsLedgerScript = join(runtimeDir, 'factsLedger.mjs');
 const lockStaleMs = 5 * 60 * 1000;
+const maxInputBytes = 1024 * 1024;
 const tests = [];
 
 function test(name, body) {
@@ -45,6 +46,20 @@ function runLedger(sandbox, args, input) {
 function appendF1(sandbox) {
   return runLedger(sandbox, ['append', '--fact-id', 'F1', '--claim', 'original', '--source-round', '1', '--confidence', 'user']);
 }
+
+test('oversized stdin fails before lock acquisition and filesystem side effects', () => {
+  const sandbox = makeSandbox('oversized-stdin', 'oversized-stdin', false);
+  try {
+    const result = runLedger(sandbox, ['list'], 'x'.repeat(maxInputBytes + 1));
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, '');
+    assert.equal(result.stderr, `factsLedger.mjs: Input exceeds ${maxInputBytes} bytes\n`);
+    assert.equal(existsSync(sandbox.lockPath), false);
+    assert.equal(existsSync(sandbox.statePath), false);
+  } finally {
+    sandbox.cleanup();
+  }
+});
 
 function seedCompleteState(sandbox) {
   assert.equal(appendF1(sandbox).status, 0);

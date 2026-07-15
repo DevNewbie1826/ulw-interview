@@ -46,6 +46,7 @@ const CONFIRMED_ENTRY_KEYS = [
   'supersedes',
 ];
 const DISPUTED_ENTRY_KEYS = [...CONFIRMED_ENTRY_KEYS, 'reason'];
+const MAX_INPUT_BYTES = 1024 * 1024;
 
 class ControlledCliError extends Error {}
 
@@ -53,8 +54,19 @@ function fail(msg) {
   throw new ControlledCliError(msg);
 }
 
-function readStdinJson() {
-  const raw = readFileSync(0, 'utf8');
+async function readStdinJson() {
+  const chunks = [];
+  let inputBytes = 0;
+  for await (const chunk of process.stdin) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    inputBytes += bytes.length;
+    if (inputBytes > MAX_INPUT_BYTES) {
+      process.stdin.destroy();
+      fail(`Input exceeds ${MAX_INPUT_BYTES} bytes`);
+    }
+    chunks.push(bytes);
+  }
+  const raw = Buffer.concat(chunks).toString('utf8');
   if (raw === '') return {};
   try {
     return JSON.parse(raw);
@@ -389,11 +401,11 @@ function queryDisputed(state) {
   return { disputes };
 }
 
-function main() {
+async function main() {
   const { command, options } = parseArgs(process.argv);
   if (!command) fail('Command required');
 
-  const stdinPayload = readStdinJson();
+  const stdinPayload = await readStdinJson();
   const interviewId = getInterviewId(options, stdinPayload);
   const statePath = statePathFor(interviewId);
   const lockPath = lockPathFor(statePath);
@@ -444,7 +456,7 @@ function main() {
 }
 
 try {
-  main();
+  await main();
 } catch (error) {
   if (error instanceof ControlledCliError) {
     process.stderr.write(`factsLedger.mjs: ${error.message}\n`);

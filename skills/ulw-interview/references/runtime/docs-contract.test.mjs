@@ -271,6 +271,8 @@ test('public READMEs document every hardened runtime boundary', () => {
     assert.match(readme, /closure_passed[^\n]*semanticCoverageGaps[^\n]*(?:exactly empty|zero-gap)/i);
     assert.match(readme, /missing[^\n]*acceptance evidence[^\n]*closure_passed[^\n]*reject/i);
     assert.match(readme, /round score[^\n]*askedTarget\.component[^\n]*unasked sibling[^\n]*(?:unchanged|reject)/i);
+    assert.match(readme, /closure[^\n]*pending[^\n]*passed[^\n]*confirmed/i);
+    assert.match(readme, /RESTATE/i);
     assert.match(readme, /artifact[^\n]*component-aware[^\n]*per-component[^\n]*scores[^\n]*globalAmbiguity[^\n]*MAX/i);
     assert.match(readme, /canonical validation fallback[^\n]*retry[^\n]*exactly once[^\n]*retryHint/i);
     assert.match(readme, /required scores[^\n]*0\.5[^\n]*validationScoreClamped[^\n]*false[^\n]*degraded[^\n]*true/i);
@@ -279,6 +281,18 @@ test('public READMEs document every hardened runtime boundary', () => {
     assert.match(readme, /before[^\n]*first scorer output[^\n]*no numeric[^\n]*first scorer output[^\n]*effective threshold[^\n]*1 - scorerOutput\.threshold/i);
     assert.match(readme, /-1[^\n]*0\.000001[^\n]*0\.05[^\n]*0\.05[^\n]*1[^\n]*0\.30/);
   }
+  assert.match(runtimeReadme, /MAX_COMPONENT_NAME_LENGTH[\s\S]*120/);
+  assert.match(runtimeReadme, /MAX_KNOWN_COMPONENTS[\s\S]*64/);
+  assert.match(runtimeReadme, /MAX_SERIALIZED_STATE_BYTES[\s\S]*1048576/);
+  assert.match(runtimeReadme, /MAX_SERIALIZED_EVENT_BYTES[\s\S]*1048576/);
+  assert.match(runtimeReadme, /MAX_SERIALIZED_PROJECTION_BYTES[\s\S]*262144/);
+  assert.match(runtimeReadme, /MAX_SERIALIZED_RESULT_BYTES[\s\S]*3145728/);
+  assert.match(runtimeReadme, /MAX_RAW_TRANSITION_BYTES[\s\S]*2101248/);
+  assert.match(runtimeReadme, /MAX_VALIDATOR_INPUT_BYTES[\s\S]*1048576/);
+  assert.match(runtimeReadme, /MAX_REGISTRY_CONTEXT_BYTES[\s\S]*262144/);
+  assert.match(runtimeReadme, /MAX_INPUT_BYTES[\s\S]*1048576/);
+  assert.match(runtimeReadme, /MAX_VALIDATION_ERRORS[\s\S]*64/);
+  assert.match(runtimeReadme, /MAX_DIAGNOSTICS[\s\S]*64/);
 });
 
 test('public READMEs document pending baseline registry and malformed lock contracts', () => {
@@ -293,6 +307,7 @@ test('public READMEs document panel history authority and retained baseline immu
   for (const readme of [rootReadme, runtimeReadme]) {
     assert.match(readme, /panelDispatchHistory[^\n]*(?:authoritative|authority)[^\n]*panelDispatchCount[^\n]*priorPanelRound/i);
     assert.match(readme, /panelDispatchHistory[^\n]*ordered[^\n]*cooldown[^\n]*chronolog/i);
+    assert.match(readme, /panelDispatchHistory[^\n]*(?:globalAmbiguity|ambiguity)[^\n]*band[^\n]*scorer-history/i);
     assert.match(readme, /currentRound\s*-\s*priorPanelRound\s*>\s*PANEL_COOLDOWN/);
     assert.match(readme, /\[1,\s*3\][^\n]*reject[^\n]*\[1,\s*4\][^\n]*legal/i);
     assert.match(readme, /reopened baseline[^\n]*retained[^\n]*scores[^\n]*coverage[^\n]*(?:immutable|unchanged|byte-equivalent)/i);
@@ -351,6 +366,8 @@ test('transition lifecycle is the sole instruction authority', () => {
   assert.doesNotMatch(skill, /factsLedgerInterviewId[^\n]*slug|INTERVIEW_ID[^\n]*slug/i);
   assert.doesNotMatch(scopedDocs, /-0\.15|panelCooldown[^\n]*default[^\n]*2/i);
   assert.doesNotMatch(scopedDocs, /last 3[^\n]*0\.05|goal\s*[×*]\s*0\.[0-9]+/i);
+  assert.match(skill, /state[^\n]*opaque trusted tool output[^\n]*exact `result\.state`/i);
+  assert.match(skill, /never[^\n]*user-supplied replacement state/i);
 });
 
 test('validation fallback instructions define the canonical side-effect-free event', () => {
@@ -436,6 +453,63 @@ test('panel findings preserve acknowledged persona identity and order', () => {
   assert.match(panel, /panel_completed[^\n]*complete ordered findings array/i);
 });
 
+test('panel personas launch in one concurrent batch behind an all-results barrier', () => {
+  assert.match(panel, /single parallel dispatch batch/i);
+  assert.match(panel, /concurrently/i);
+  assert.match(panel, /independent (?:copy of )?context/i);
+  assertOrdered(
+    panel,
+    ['single parallel dispatch batch', 'panel_dispatched', 'all-results barrier', 'panel_completed'],
+    'panel concurrency or all-results barrier is ambiguous',
+  );
+  assert.match(panel, /reassemble[^\n]*reducer-returned persona order/i);
+  assert.match(panel, /sum\(L_i\)[^\n]*max\(L_i\)/i);
+  assert.match(panel, /timeout|dispatch error|invalid result/i);
+  assert.match(panel, /panel_failed[^\n]*discard[^\n]*partial/i);
+  assert.match(panel, /failed dispatches[^\n]*remain counted|dispatch count[^\n]*not rolled back/i);
+  assert.match(panel, /launch fails[^\n]*do not emit `panel_dispatched`[^\n]*panel_failed[^\n]*dispatch_error/i);
+  assert.match(panel, /atomically records[^\n]*intended persona batch/i);
+  assert.match(skill, /panel_failed[^\n]*pending target[^\n]*one question/i);
+});
+
+test('compression policy executes two and three-round boundaries and valid-cache reuse', () => {
+  const policy = contractJson(oracle, 'compression-policy');
+  assert.deepEqual(policy, {
+    trigger_tokens: 4000,
+    latest_verbatim_rounds: 2,
+    selection: 'oldest_half_of_eligible_prefix_rounded_up',
+    cache_key: [
+      'exact_prefix', 'global_id_registry', 'all_component_id_ownership',
+      'compression_prompt_version',
+    ],
+  });
+
+  function plan(roundTokenCounts) {
+    const eligiblePrefix = roundTokenCounts.slice(0, Math.max(0, roundTokenCounts.length - policy.latest_verbatim_rounds));
+    const selectedPrefix = eligiblePrefix.slice(0, Math.ceil(eligiblePrefix.length / 2));
+    return {
+      eligiblePrefix,
+      selectedPrefix,
+      dispatch: selectedPrefix.length > 0
+        && selectedPrefix.reduce((total, tokens) => total + tokens, 0) > policy.trigger_tokens,
+    };
+  }
+
+  assert.deepEqual(plan([2501, 2501]), { eligiblePrefix: [], selectedPrefix: [], dispatch: false });
+  assert.deepEqual(plan([4000, 2501, 2501]), { eligiblePrefix: [4000], selectedPrefix: [4000], dispatch: false });
+  assert.deepEqual(plan([4001, 2501, 2501]), { eligiblePrefix: [4001], selectedPrefix: [4001], dispatch: true });
+  assert.match(oracle, /validation retry[^\n]*reuse[^\n]*same cache key/i);
+  assert.match(oracle, /unchanged prefix[^\n]*reuse/i);
+  assert.match(oracle, /prefix changes[^\n]*invalidat/i);
+  assert.match(oracle, /never cache[^\n]*(?:invalid|fallback)/i);
+  assert.match(oracle, /immutable full transcript[^\n]*only source/i);
+  assert.match(oracle, /working transcript[^\n]*never[^\n]*(?:selection|cache key)/i);
+  assert.match(oracle, /cache lifetime[^\n]*one interview/i);
+  assert.match(oracle, /missing[^\n]*(?:semantic|evidence) ID[^\n]*invalid/i);
+  assert.match(skill, /immutableFullTranscript[^\n]*workingTranscript[^\n]*compressionCache/i);
+  assert.match(oracle, /calls saved[^\n]*sum[^\n]*\(k_i - 1\)/i);
+});
+
 test('reducer action exclusively owns target selection', () => {
   const execution = section(skill, '## Execution Policy', '## Communication Style');
   assert.doesNotMatch(execution, /target the WEAKEST clarity dimension|rotate targeting/i);
@@ -447,6 +521,31 @@ test('factual findings still require exactly one user confirmation for ask_targe
   assert.match(ask, /factual findings[^\n]*inform[^\n]*confirmation/i);
   assert.match(ask, /never[^\n]*auto-complete[^\n]*`ask_target`/i);
   assert.doesNotMatch(ask, /answer it yourself|resolved without direct user/i);
+});
+
+test('fast-answer guidance enriches the same component without another question', () => {
+  const ask = section(skill, '### Step 1: Generate Next Question', '### Step 3: Score Ambiguity');
+  assert.match(ask, /optional fast-answer guidance/i);
+  for (const detail of ['must-have', 'must-not', 'out-of-scope', 'invariant', 'evidence']) {
+    assert.match(ask, new RegExp(detail, 'i'), `fast-answer guidance omits ${detail}`);
+  }
+  assert.match(ask, /same single question/i);
+  assert.match(ask, /no second (?:target|question)|never ask a second (?:target|question)/i);
+  assert.match(ask, /same component/i);
+  assert.match(ask, /sibling components[^\n]*(?:immutable|byte-for-byte)/i);
+  assert.match(oracle, /fast-answer[^\n]*same component/i);
+  assert.match(oracle, /no second target[^\n]*no second question/i);
+
+  const trace = [
+    { action: 'ask_target', component: 'API', target: 'must_haves' },
+    { tool: 'question', calls: [...ask.matchAll(/Then call the `question` tool:/g)].length },
+    { answer: 'one free-text answer with related M/N/X/I/E details' },
+    { oracle: 'capture', mutableComponents: ['API'] },
+    { event: 'round_scored', questionsAsked: 1 },
+  ];
+  assert.equal(trace[1].calls, 1);
+  assert.equal(trace.at(-1).questionsAsked, 1);
+  assert.deepEqual(trace[3].mutableComponents, [trace[0].component]);
 });
 
 test('Oracle category examples enforce conditional provenance and cardinality', () => {
@@ -557,6 +656,57 @@ test('early exit has no caller round gate', () => {
   const limits = section(skill, '### Step 5: Check Limits', '## Phase 3:');
   assert.doesNotMatch(limits, /Round 3\+|round\s*(?:>=|>|at least)\s*3/i);
   assert.match(limits, /early exit[^\n]*whenever[^\n]*user requests/i);
+});
+
+test('known semantic gaps short-circuit closure model calls with bounded states', () => {
+  const limits = section(skill, '### Step 5: Check Limits', '## Phase 3:');
+  const closure = section(skill, '**Closure / acceptance guard.**', '**Restate / intent-contract gate.**');
+  assert.match(limits, /hard cap[^\n]*semanticCoverageGaps[^\n]*nonempty[^\n]*incomplete[^\n]*`write_spec`/i);
+  assert.match(limits, /early exit[^\n]*semanticCoverageGaps[^\n]*nonempty[^\n]*incomplete[^\n]*`write_spec`/i);
+  assert.match(limits, /without `run_closure`[^\n]*zero closure Oracle calls[^\n]*zero additional user questions/i);
+  assert.match(limits, /known-gap short-circuit[^\n]*one Oracle call/i);
+  assert.match(closure, /`run_closure`[^\n]*semanticCoverageGaps[^\n]*empty/i);
+  assert.match(closure, /never emit `closure_passed`[^\n]*nonempty/i);
+});
+
+test('expected duration and optional discovery preset preserve the assurance default', () => {
+  const duration = section(rootReadme, '## Expected Duration', '## Configuration');
+  assert.match(duration, /planning envelope[^\n]*not an empirical benchmark/i);
+  assert.match(duration, /T\s*=/);
+  for (const term of ['topology', 'baseline', 'user', 'scoring', 'validation retry', 'compression', 'panel', 'closure', 'restate', 'artifact']) {
+    assert.match(duration, new RegExp(term, 'i'), `duration model omits ${term}`);
+  }
+  assert.match(duration, /model[^\n]*user[^\n]*latency[^\n]*dominates/i);
+  assert.doesNotMatch(duration, /observed|p95|median|20-75|30-165|60-330/i);
+  for (const source of [rootReadme, runtimeReadme, skill]) {
+    assert.match(source, /product discovery[^\n]*0\.10[^\n]*15[^\n]*8[^\n]*6/i);
+    assert.match(source, /default[^\n]*high-assurance[^\n]*0\.05|high-assurance[^\n]*default[^\n]*0\.05/i);
+    assert.match(source, /never adapt[^\n]*threshold[^\n]*mid-session/i);
+  }
+  assert.match(duration, /trade-?off[^\n]*(?:speed|faster)[^\n]*(?:assurance|certainty|coverage)/i);
+  assert.doesNotMatch(skill, /30-40[^\n]*product discovery/i);
+});
+
+test('both artifacts expose component scope and deterministic unscored rows', () => {
+  const normal = markdownArtifact(section(spec, '## Normal spec', '## Incomplete Spec Report'));
+  const incomplete = markdownArtifact(section(spec, '## Incomplete Spec Report', null));
+  for (const [label, artifact] of [['normal', normal], ['incomplete', incomplete]]) {
+    assert.match(artifact, /## Component Scope/, label);
+    assert.match(artifact, /Component \| Scope \| Scoring/, label);
+    assert.match(artifact, /\{component\} \| Deferred \| Not scored/, label);
+    assert.match(artifact, /scoreStateMatrix[^\n]*null[^\n]*Score[^\n]*Weighted[^\n]*—/i, label);
+  }
+  assert.match(spec, /manifest[^\n]*scored[^\n]*component scope/i);
+  assert.match(spec, /derive[^\n]*status[^\n]*component scope[^\n]*compare[^\n]*committed/i);
+  assert.match(spec, /zero semantic gaps[^\n]*does not mean[^\n]*no deferred scope/i);
+});
+
+test('spec_written instructions never collapse the acknowledgement to kind and path', () => {
+  for (const source of [skill, spec]) {
+    assert.doesNotMatch(source, /emit `spec_written` with (?:the )?(?:returned|matching) kind and (?:the )?actual path\.?/i);
+  }
+  assert.match(skill, /spec_written[^\n]*components[^\n]*unresolvedGaps[^\n]*globalAmbiguity/i);
+  assert.match(spec, /exact `spec_written` payload/i);
 });
 
 test('soft warning is informational inside the one returned-target question', () => {
@@ -700,6 +850,60 @@ test('two-component fixture projects without history evidence context or gap los
     );
     assert.match(artifact, /<details>[\s\S]*<summary>Full Q&A/, `${label} lost progressive transcript disclosure`);
   }
+});
+
+test('transition manifest is derived from rendered component ID evidence and gap rows', () => {
+  const schema = contractJson(spec, 'transition-manifest');
+  assert.deepEqual(Object.keys(schema), [
+    'kind', 'path', 'components', 'unresolvedGaps', 'globalAmbiguity',
+  ]);
+
+  const artifact = markdownArtifact(section(spec, '## Incomplete Spec Report', null));
+  const historyRows = Object.entries(TWO_COMPONENT_ARTIFACT_FIXTURE.history)
+    .flatMap(([heading, rows]) => projectRows(artifact, heading, rows));
+  const evidenceRows = projectRows(artifact, 'Acceptance Evidence', TWO_COMPONENT_ARTIFACT_FIXTURE.evidence);
+  const gapRows = projectRows(artifact, 'Unresolved Semantic Gaps', TWO_COMPONENT_ARTIFACT_FIXTURE.gaps);
+  const componentRows = [
+    ...projectRows(artifact, 'Clarity Breakdown', TWO_COMPONENT_ARTIFACT_FIXTURE.clarity),
+    ...historyRows,
+    ...evidenceRows,
+    ...gapRows,
+  ];
+  const manifest = {
+    kind: 'incomplete',
+    path: '.omo/specs/ulw-interview-fixture.md',
+    components: [...new Set(componentRows.map(({ Component }) => Component))].map((name) => ({
+      name,
+      status: 'active',
+      scored: true,
+      itemIds: historyRows.filter(({ Component }) => Component === name).map(({ ID }) => ID),
+      evidenceIds: evidenceRows.filter(({ Component }) => Component === name).map(({ Evidence }) => Evidence),
+    })),
+    unresolvedGaps: [
+      { component: 'API', category: 'acceptance_evidence', itemId: 'M3', reason: 'missing_evidence' },
+      { component: 'UI', category: 'out_of_scope', itemId: null, reason: 'open' },
+    ],
+    globalAmbiguity: Number(TWO_COMPONENT_ARTIFACT_FIXTURE.globalAmbiguity),
+  };
+
+  assert.deepEqual(manifest, {
+    kind: 'incomplete',
+    path: '.omo/specs/ulw-interview-fixture.md',
+    components: [
+      { name: 'API', status: 'active', scored: true, itemIds: ['O1', 'M1', 'M3', 'I1', 'X1', 'P1'], evidenceIds: ['E1'] },
+      { name: 'UI', status: 'active', scored: true, itemIds: ['O2', 'M2', 'I2', 'N1', 'X2', 'P2'], evidenceIds: ['E2'] },
+    ],
+    unresolvedGaps: [
+      { component: 'API', category: 'acceptance_evidence', itemId: 'M3', reason: 'missing_evidence' },
+      { component: 'UI', category: 'out_of_scope', itemId: null, reason: 'open' },
+    ],
+    globalAmbiguity: 0.42,
+  });
+  assert.match(spec, /derive[^\n]*manifest[^\n]*rendered artifact/i);
+  assert.match(spec, /render[^\n]*all components[^\n]*all (?:semantic )?IDs[^\n]*all unresolved gaps/i);
+  assertOrdered(spec, ['render the artifact', 'derive the transition manifest', 'emit `spec_written`'], 'write protocol order is ambiguous');
+  assert.match(spec, /does not validate[^\n]*(?:file contents|artifact prose)[^\n]*beyond[^\n]*manifest/i);
+  assert.match(spec, /exact `spec_written` payload/i);
 });
 
 test('both artifacts preserve provenance supersession and evidence history symmetrically', () => {

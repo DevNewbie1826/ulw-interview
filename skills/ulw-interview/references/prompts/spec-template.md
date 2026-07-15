@@ -4,6 +4,45 @@ Write the artifact to `.omo/specs/ulw-interview-{slug}.md` using the `write` too
 
 Render confirmed user language, not reducer phases, target kinds, category status names, scorer flags, or trigger labels. Keep stable semantic and evidence IDs only where they create the required audit links.
 
+## Write Protocol And Transition Manifest
+
+On `write_spec`, render the artifact completely before acknowledgement. Render all components, all semantic IDs and evidence IDs, and all unresolved gaps represented by the committed reducer state. Then derive the transition manifest from the rendered artifact itself, never from an intended template or pre-render source object.
+
+<!-- transition-manifest:start -->
+```json
+{
+  "kind": "{complete or incomplete}",
+  "path": ".omo/specs/ulw-interview-{slug}.md",
+  "components": [
+    {
+      "name": "{component}",
+      "status": "{active or deferred}",
+      "scored": true,
+      "itemIds": ["{O/M/N/X/I/P ID in category and history order}"],
+      "evidenceIds": ["{E ID in append order}"]
+    }
+  ],
+  "unresolvedGaps": [
+    {
+      "component": "{component}",
+      "category": "{outcome|must_haves|must_nots|out_of_scope|invariants|acceptance_evidence}",
+      "itemId": "{M/N/I ID or null}",
+      "reason": "{open or missing_evidence}"
+    }
+  ],
+  "globalAmbiguity": 0.0
+}
+```
+<!-- transition-manifest:end -->
+
+Build `components` in exact reducer order: active topology first, then deferred components. For each component, derive `status` from the rendered Component Scope cell (`In scope` maps to `active`; `Deferred` maps to `deferred`), derive `itemIds`, `evidenceIds`, and boolean `scored` from the rendered artifact's scope, clarity, history, and evidence rows, then compare every field with committed reducer state. Derive every renderable unresolved row from the artifact and bind it to the exact ordered `semanticCoverageGaps` records. Set `globalAmbiguity` to the reducer's committed value.
+
+The manifest `scored` field must match the rendered Component Scope row and the null/non-null score state.
+
+Compare the result with the committed kind, safe path, complete component set, immutable registry, ownership map, ordered `semanticCoverageGaps`, and global ambiguity. Fix any omission before acknowledgement. The manifest check proves only those projected fields; it does not validate file contents or artifact prose beyond the manifest.
+
+Only after that comparison succeeds, emit `spec_written` with the exact `spec_written` payload shown above. `transition.mjs` rejects missing, extra, reordered, or state-divergent manifest fields; it does not inspect the artifact file itself.
+
 ## Normal spec
 
 ```markdown
@@ -16,8 +55,16 @@ Render confirmed user language, not reducer phases, target kinds, category statu
 - Threshold: {threshold}
 - Generated: {timestamp}
 
+## Component Scope
+| Component | Scope | Scoring |
+|-----------|-------|---------|
+| {component} | In scope | Scored |
+| {component} | Deferred | Not scored |
+
+Render exactly one row per manifest component in reducer order. Use `In scope` for current topology and `Deferred` for deferred scope; map `scored:true` to `Scored` and `scored:false` to `Not scored`. Zero semantic gaps does not mean there is no deferred scope: deferred components remain visible here even when Unresolved Semantic Gaps is empty.
+
 ## Clarity Breakdown
-Render one row for every required dimension of every included component. `Still unclear` in Metadata is exactly the reducer's `globalAmbiguity`, which is the maximum per-component ambiguity; never recompute it from this table.
+Render one row for every required dimension of every included component. When `scoreStateMatrix[name]` is null, both Score and Weighted render as `—` in every required row; never invent a score. Keep the configured Weight visible. `Still unclear` in Metadata is exactly the reducer's `globalAmbiguity`, which is the maximum per-component ambiguity; never recompute it from this table.
 
 | Component | Dimension | Score | Weight | Weighted |
 |-----------|-----------|-------|--------|----------|
@@ -127,8 +174,16 @@ Use this full structure when the reducer returns `write_spec` with the incomplet
 - Threshold: {threshold}
 - Generated: {timestamp}
 
+## Component Scope
+| Component | Scope | Scoring |
+|-----------|-------|---------|
+| {component} | In scope | Scored |
+| {component} | Deferred | Not scored |
+
+Render exactly one row per manifest component in reducer order. Use `In scope` for current topology and `Deferred` for deferred scope; map `scored:true` to `Scored` and `scored:false` to `Not scored`. Zero semantic gaps does not mean there is no deferred scope: deferred or pending-baseline components remain visible here even when Unresolved Semantic Gaps is empty.
+
 ## Clarity Breakdown
-Render one row for every required dimension of every included component. `Still unclear` in Metadata is exactly the reducer's `globalAmbiguity`, which is the maximum per-component ambiguity; never recompute it from this table.
+Render one row for every required dimension of every included component. When `scoreStateMatrix[name]` is null, both Score and Weighted render as `—` in every required row; never invent a score. Keep the configured Weight visible. `Still unclear` in Metadata is exactly the reducer's `globalAmbiguity`, which is the maximum per-component ambiguity; never recompute it from this table.
 
 | Component | Dimension | Score | Weight | Weighted |
 |-----------|-----------|-------|--------|----------|
@@ -226,4 +281,4 @@ Render all historical evidence in append order, including links to Historical M/
 </details>
 ```
 
-After either artifact is written, emit `spec_written` with the matching kind and actual path. Do not invent post-spec choices; execute the reducer's next action.
+After either artifact is written and its transition manifest passes the preflight comparison, emit the full exact `spec_written` payload with matching `kind`, actual `path`, ordered `components`, ordered `unresolvedGaps`, and committed `globalAmbiguity`. Do not invent post-spec choices; execute the reducer's next action.
