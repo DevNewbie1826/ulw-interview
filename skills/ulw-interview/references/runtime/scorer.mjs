@@ -44,7 +44,6 @@ const THRESHOLD_MAX = 0.30;          // inclusive upper bound for threshold
  * @property {number} [currentRound]        // 1-based Phase 2 round number
  * @property {Trigger[]} [triggers]
  * @property {boolean} [degraded]           // true if validation fallback was used
- * @property {boolean} [ontologyConverged]
  */
 
 function readInput() {
@@ -169,8 +168,8 @@ function applyTriggers(components, triggers) {
 function computePerComponentAmbiguity(components, type) {
   // returns per-component { name, ambiguity, scores, firedDims }
   const weights = type === 'greenfield'
-    ? { goal: 0.40, constraints: 0.30, criteria: 0.30, context: 0 }
-    : { goal: 0.35, constraints: 0.25, criteria: 0.25, context: 0.15 };
+    ? { goal: 0.35, constraints: 0.35, criteria: 0.30, context: 0 }
+    : { goal: 0.30, constraints: 0.30, criteria: 0.25, context: 0.15 };
 
   return components.map((c) => {
     const s = c.scores;
@@ -349,8 +348,6 @@ function main() {
   const resolvedWithoutUser = input.lastRoundResolvedWithoutUser === true;
   const streakCounter = resolvedWithoutUser ? priorStreak + 1 : 0;
   const forceUserQuestion = streakCounter >= 3;
-  const ontologyConverged = input.ontologyConverged === true;
-
   // 14. canonical next target (deterministic — removes LLM tie-break divergence)
   // Rule: pick the component with the HIGHEST ambiguity (worst); within that component,
   // pick the required dim with the LOWEST score. Tie-break: alphabetical.
@@ -387,7 +384,7 @@ function main() {
     skipToSpec,
     nextPanelEligible,
     suppressPanelForOscillation,
-    dispatchPanel: nextPanelEligible && !suppressPanelForOscillation && bandChanged,
+    dispatchPanel: !ready && nextPanelEligible && !suppressPanelForOscillation && bandChanged,
     panelCooldown: PANEL_COOLDOWN,
     scoreClamped,
     validationScoreClamped: input.validationScoreClamped === true,
@@ -399,7 +396,6 @@ function main() {
     degraded: input.degraded === true,
     currentRound,
     triggerDelta: TRIGGER_DELTA,
-    ontologyConverged,
   };
 
   process.stdout.write(JSON.stringify(output, null, 2) + '\n');

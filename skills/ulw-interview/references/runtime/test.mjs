@@ -12,11 +12,30 @@ import { dirname, join } from 'node:path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCORER = join(__dirname, 'scorer.mjs');
 const VALIDATE = join(__dirname, 'validate.mjs');
-const CONVERGENCE = join(__dirname, 'convergence.mjs');
 
 function runScript(scriptPath, stdin) {
   const r = spawnSync('node', [scriptPath], { input: stdin, encoding: 'utf8' });
   return { stdout: r.stdout, stderr: r.stderr, status: r.status };
+}
+
+function validCoverageFields() {
+  const explicitNone = { status: 'explicit_none', source: 'user', source_round: 0, items: [] };
+  return {
+    coverage: {
+      outcome: {
+        status: 'confirmed',
+        source: 'user',
+        source_round: 0,
+        items: [{ id: 'O1', text: 'Deliver the requested outcome', source: 'user', source_round: 0, state: 'active', supersedes: null }],
+      },
+      must_haves: explicitNone,
+      must_nots: explicitNone,
+      out_of_scope: explicitNone,
+      invariants: explicitNone,
+      preferences: explicitNone,
+    },
+    acceptance_evidence: [],
+  };
 }
 
 let pass = 0;
@@ -40,6 +59,7 @@ console.log('\n[validate.mjs]');
 
 test('valid greenfield JSON → ok:true', () => {
   const input = JSON.stringify({
+    ...validCoverageFields(),
     type: 'greenfield',
     scores: { goal: 0.8, constraints: 0.7, criteria: 0.6 },
     weakest_dimension: 'criteria',
@@ -57,6 +77,7 @@ test('valid greenfield JSON → ok:true', () => {
 
 test('valid brownfield JSON → ok:true with context', () => {
   const input = JSON.stringify({
+    ...validCoverageFields(),
     type: 'brownfield',
     scores: { goal: 0.9, constraints: 0.9, criteria: 0.8, context: 0.7 },
     weakest_dimension: 'context',
@@ -72,6 +93,7 @@ test('valid brownfield JSON → ok:true with context', () => {
 
 test('missing required dim → ok:false with retryHint', () => {
   const input = JSON.stringify({
+    ...validCoverageFields(),
     type: 'greenfield',
     scores: { goal: 0.8 }, // missing constraints, criteria
     weakest_dimension: 'goal',
@@ -108,6 +130,7 @@ test('invalid trigger type → ok:false', () => {
 
 test('score out of [0,1] → ok:true with clamped value + clampedFields flag', () => {
   const input = JSON.stringify({
+    ...validCoverageFields(),
     type: 'greenfield',
     scores: { goal: 1.2, constraints: 0.7, criteria: 0.6 },
     weakest_dimension: 'goal',
@@ -135,6 +158,7 @@ test('expected-type CLI override — brownfield required even if oracle omits ty
 
 test('expected-type CLI override — brownfield passes when context provided', () => {
   const input = JSON.stringify({
+    ...validCoverageFields(),
     scores: { goal: 0.8, constraints: 0.7, criteria: 0.6, context: 0.5 },
     weakest_dimension: 'goal',
     triggers: [],
@@ -177,24 +201,6 @@ const GREENFIELD_NOT_READY = {
     { name: 'API', scores: { goal: 0.5, constraints: 0.5, criteria: 0.5 } },
   ],
 };
-
-test('ontologyConverged=true → output passes through true', () => {
-  const input = {
-    ...GREENFIELD_READY,
-    ontologyConverged: true,
-  };
-  const r = runScript(SCORER, JSON.stringify(input));
-  assert.equal(r.status, 0);
-  const out = JSON.parse(r.stdout);
-  assert.equal(out.ontologyConverged, true);
-});
-
-test('ontologyConverged missing → output defaults false', () => {
-  const r = runScript(SCORER, JSON.stringify(GREENFIELD_READY));
-  assert.equal(r.status, 0);
-  const out = JSON.parse(r.stdout);
-  assert.equal(out.ontologyConverged, false);
-});
 
 test('greenfield all-0.95 → ready:true', () => {
   const r = runScript(SCORER, JSON.stringify(GREENFIELD_READY));
@@ -610,6 +616,7 @@ console.log('\n[pipeline: validate.mjs → scorer.mjs]');
 
 test('oracle output → validate → scorer pipeline produces ready:true', () => {
   const oracleOut = JSON.stringify({
+    ...validCoverageFields(),
     type: 'greenfield',
     scores: { goal: 0.96, constraints: 0.95, criteria: 0.96 },
     weakest_dimension: 'constraints',
@@ -633,6 +640,7 @@ test('oracle output → validate → scorer pipeline produces ready:true', () =>
 test('pipeline: brownfield cannot reach 0.05 with context=0', () => {
   // Documents the brownfield-context requirement (math from numerical stress case #15)
   const oracleOut = JSON.stringify({
+    ...validCoverageFields(),
     type: 'brownfield',
     scores: { goal: 1.0, constraints: 1.0, criteria: 1.0, context: 0.0 },
     weakest_dimension: 'context',
@@ -649,131 +657,6 @@ test('pipeline: brownfield cannot reach 0.05 with context=0', () => {
   const sOut = JSON.parse(s.stdout);
   assert.equal(sOut.ready, false, 'brownfield needs context ≥ ~0.667 even with perfect others');
   assert.ok(sOut.globalAmbiguity > 0.05);
-});
-
-// [convergence.mjs]
-
-console.log('\n[convergence.mjs]');
-
-test('empty slotSet → zeroed stability payload', () => {
-  const input = JSON.stringify({
-    slotSet: [],
-    priorSnapshots: [],
-  });
-  const r = runScript(CONVERGENCE, input);
-  assert.equal(r.status, 0);
-  const out = JSON.parse(r.stdout);
-  assert.deepEqual(out, {
-    stability_ratio: 0,
-    converged: false,
-    stable: 0,
-    changed: 0,
-    new: 0,
-    removed: 0,
-    total: 0,
-  });
-});
-
-test('identical slotSet across two rounds → ratio 1.0 and converged', () => {
-  const slotSet = [{ name: 'User', type: 'core domain', fields: ['id', 'email'] }];
-  const input = JSON.stringify({
-    slotSet,
-    priorSnapshots: [slotSet, slotSet],
-  });
-  const r = runScript(CONVERGENCE, input);
-  assert.equal(r.status, 0);
-  const out = JSON.parse(r.stdout);
-  assert.equal(out.stability_ratio, 1.0);
-  assert.equal(out.converged, true);
-  assert.equal(out.stable, 1);
-  assert.equal(out.changed, 0);
-  assert.equal(out.new, 0);
-  assert.equal(out.removed, 0);
-  assert.equal(out.total, 1);
-});
-
-test('50% name change with same type and ≥50% field overlap counts as changed', () => {
-  const input = JSON.stringify({
-    slotSet: [{ name: 'Account', type: 'core domain', fields: ['id', 'email'] }],
-    priorSnapshots: [[{ name: 'User', type: 'core domain', fields: ['id', 'email'] }], [{ name: 'User', type: 'core domain', fields: ['id', 'email'] }]],
-  });
-  const r = runScript(CONVERGENCE, input);
-  assert.equal(r.status, 0);
-  const out = JSON.parse(r.stdout);
-  assert.equal(out.stability_ratio, (out.stable + out.changed) / out.total);
-  assert.equal(out.stable, 0);
-  assert.equal(out.changed, 1);
-  assert.equal(out.new, 0);
-  assert.equal(out.removed, 0);
-  assert.equal(out.total, 1);
-});
-
-test('priorSnapshots.length < 2 → convergence is not yet available', () => {
-  const input = JSON.stringify({
-    slotSet: [{ name: 'User', type: 'core domain', fields: ['id', 'email'] }],
-    priorSnapshots: [[{ name: 'User', type: 'core domain', fields: ['id', 'email'] }]],
-  });
-  const r = runScript(CONVERGENCE, input);
-  assert.equal(r.status, 0);
-  const out = JSON.parse(r.stdout);
-  assert.equal(out.converged, false);
-  assert.equal(out.stability_ratio, null);
-});
-
-test('same name but different type counts as new plus removed', () => {
-  const input = JSON.stringify({
-    slotSet: [{ name: 'User', type: 'product', fields: ['id', 'email'] }],
-    priorSnapshots: [[{ name: 'User', type: 'core domain', fields: ['id', 'email'] }], [{ name: 'User', type: 'core domain', fields: ['id', 'email'] }]],
-  });
-  const r = runScript(CONVERGENCE, input);
-  assert.equal(r.status, 0);
-  const out = JSON.parse(r.stdout);
-  assert.equal(out.stability_ratio, 0);
-  assert.equal(out.stable, 0);
-  assert.equal(out.changed, 0);
-  assert.equal(out.new, 1);
-  assert.equal(out.removed, 1);
-  assert.equal(out.total, 1);
-});
-
-test('all new entities → zero ratio with all current counted as new', () => {
-  const input = JSON.stringify({
-    slotSet: [
-      { name: 'Billing', type: 'core domain', fields: ['id'] },
-      { name: 'Invoice', type: 'core domain', fields: ['id', 'amount'] },
-    ],
-    priorSnapshots: [[{ name: 'User', type: 'core domain', fields: ['id', 'email'] }], [{ name: 'User', type: 'core domain', fields: ['id', 'email'] }]],
-  });
-  const r = runScript(CONVERGENCE, input);
-  assert.equal(r.status, 0);
-  const out = JSON.parse(r.stdout);
-  assert.equal(out.stability_ratio, 0);
-  assert.equal(out.new, 2);
-  assert.equal(out.stable, 0);
-  assert.equal(out.changed, 0);
-  assert.equal(out.removed, 1);
-  assert.equal(out.total, 2);
-});
-
-test('hash stays deterministic for the same input', () => {
-  const input = JSON.stringify({
-    slotSet: [{ name: 'User', type: 'core domain', fields: ['email', 'id'] }],
-    priorSnapshots: [[{ name: 'User', type: 'core domain', fields: ['id', 'email'] }], [{ name: 'User', type: 'core domain', fields: ['id', 'email'] }]],
-  });
-  const first = runScript(CONVERGENCE, input);
-  const second = runScript(CONVERGENCE, input);
-  assert.equal(first.status, 0);
-  assert.equal(second.status, 0);
-  const firstOut = JSON.parse(first.stdout);
-  const secondOut = JSON.parse(second.stdout);
-  assert.equal(firstOut.hash, secondOut.hash);
-});
-
-test('malformed JSON stdin → exit 1 and Invalid JSON on stderr', () => {
-  const r = runScript(CONVERGENCE, '{not json');
-  assert.equal(r.status, 1);
-  assert.notEqual(r.stderr.trim(), '');
-  assert.match(r.stderr, /Invalid JSON/);
 });
 
 // ---------- refineGate.mjs ----------
@@ -1161,8 +1044,9 @@ test('scorer priorPanelRound undefined → cooldown default works', () => {
   assert.equal(out.nextPanelEligible, true);
 });
 
-test('validate expected-type=greenfield with brownfield input → ok:true', () => {
+test('validate expected-type=greenfield rejects brownfield context but preserves type coercion', () => {
   const input = JSON.stringify({
+    ...validCoverageFields(),
     type: 'brownfield',
     scores: { goal: 0.8, constraints: 0.7, criteria: 0.6, context: 0.5 },
     weakest_dimension: 'goal',
@@ -1171,18 +1055,20 @@ test('validate expected-type=greenfield with brownfield input → ok:true', () =
   const r = spawnSync('node', [VALIDATE, '--expected-type=greenfield'], { input, encoding: 'utf8' });
   assert.equal(r.status, 0);
   const out = JSON.parse(r.stdout);
-  assert.equal(out.ok, true);
-  assert.equal(out.normalized.type, 'greenfield');
-});
+  assert.equal(out.ok, false);
+  assert.deepEqual(out.errors, [
+    'scores.context is not allowed for greenfield; expected exactly goal|constraints|criteria',
+  ]);
 
-test('scorer ontologyConverged missing → false', () => {
-  const input = {
-    ...GREENFIELD_READY,
-  };
-  const r = runScript(SCORER, JSON.stringify(input));
-  assert.equal(r.status, 0);
-  const out = JSON.parse(r.stdout);
-  assert.equal(out.ontologyConverged, false);
+  const compatible = JSON.parse(input);
+  delete compatible.scores.context;
+  const compatibleRun = spawnSync('node', [VALIDATE, '--expected-type=greenfield'], {
+    input: JSON.stringify(compatible), encoding: 'utf8',
+  });
+  const compatibleOut = JSON.parse(compatibleRun.stdout);
+  assert.equal(compatibleOut.ok, true);
+  assert.equal(compatibleOut.normalized.type, 'greenfield');
+  assert.deepEqual(Object.keys(compatibleOut.normalized.scores), ['goal', 'constraints', 'criteria']);
 });
 
 // ---------- summary ----------

@@ -16,15 +16,46 @@ import { readFileSync } from 'node:fs';
 // cannot silently default an ambiguous oracle response to the wrong type.
 const argv = process.argv.slice(2);
 let expectedType = null;
+let registryContextEncoded = null;
+let registryContext = null;
+const cliErrors = [];
 for (const a of argv) {
   const m = /^--expected-type=(greenfield|brownfield)$/.exec(a);
   if (m) expectedType = m[1];
+  if (a === '--registry-context') {
+    cliErrors.push('--registry-context requires a base64url JSON value');
+  } else if (a.startsWith('--registry-context=')) {
+    if (registryContextEncoded !== null) {
+      cliErrors.push('--registry-context may be provided at most once');
+    } else {
+      registryContextEncoded = a.slice('--registry-context='.length);
+    }
+  }
 }
 
 const REQUIRED_DIMS_GREENFIELD = ['goal', 'constraints', 'criteria'];
 const REQUIRED_DIMS_BROWNFIELD = ['goal', 'constraints', 'criteria', 'context'];
 const VALID_DIMS = new Set(['goal', 'constraints', 'criteria', 'context']);
 const VALID_TRIGGERS = new Set(['A', 'B', 'C', 'D']);
+const TOP_LEVEL_KEYS = new Set([
+  'type', 'scores', 'weakest_dimension', 'triggers', 'justification', 'gap',
+  'coverage', 'acceptance_evidence',
+]);
+const COVERAGE_KEYS = ['outcome', 'must_haves', 'must_nots', 'out_of_scope', 'invariants', 'preferences'];
+const CATEGORY_CONFIG = {
+  outcome: { prefix: 'O', statuses: new Set(['open', 'confirmed']) },
+  must_haves: { prefix: 'M', statuses: new Set(['open', 'confirmed', 'explicit_none']) },
+  must_nots: { prefix: 'N', statuses: new Set(['open', 'confirmed', 'explicit_none']) },
+  out_of_scope: { prefix: 'X', statuses: new Set(['open', 'confirmed', 'explicit_none']) },
+  invariants: { prefix: 'I', statuses: new Set(['open', 'confirmed', 'explicit_none']) },
+  preferences: { prefix: 'P', statuses: new Set(['open', 'confirmed', 'explicit_none']) },
+};
+const CATEGORY_KEYS = new Set(['status', 'source', 'source_round', 'items']);
+const ITEM_KEYS = new Set(['id', 'text', 'source', 'source_round', 'state', 'supersedes']);
+const EVIDENCE_KEYS = new Set(['id', 'verifies', 'type', 'pass_condition', 'source', 'source_round']);
+const EVIDENCE_TYPES = new Set(['test', 'inspection', 'observation', 'analysis']);
+const REGISTRY_CONTEXT_KEYS = new Set(['component', 'owners']);
+const REGISTRY_ID_PATTERN = /^[OMNXIPE][1-9][0-9]*$/;
 
 function readInput() {
   return readFileSync(0, 'utf8');
@@ -37,12 +68,297 @@ function clamp01(n) {
   return n;
 }
 
+function isObject(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function addUnknownKeyErrors(value, allowedKeys, path, errors) {
+  if (!isObject(value)) return;
+  for (const key of Object.keys(value)) {
+    if (!allowedKeys.has(key)) errors.push(`${path}.${key} is not allowed`);
+  }
+}
+
+function isNonNegativeInteger(value) {
+  return Number.isInteger(value) && value >= 0;
+}
+
+function parseRegistryContext(encoded, errors) {
+  const errorCount = errors.length;
+  if (!/^[A-Za-z0-9_-]+$/.test(encoded)) {
+    errors.push('registry context must be canonical non-empty base64url JSON');
+    return null;
+  }
+  const bytes = Buffer.from(encoded, 'base64url');
+  if (bytes.toString('base64url') !== encoded) {
+    errors.push('registry context must be canonical non-empty base64url JSON');
+    return null;
+  }
+  let decoded;
+  try {
+    decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    errors.push('registry context must decode to valid UTF-8 JSON');
+    return null;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(decoded);
+  } catch {
+    errors.push('registry context must decode to valid JSON');
+    return null;
+  }
+  if (!isObject(parsed)) {
+    errors.push('registry context must be an object');
+    return null;
+  }
+  addUnknownKeyErrors(parsed, REGISTRY_CONTEXT_KEYS, 'registry context', errors);
+  if (!Object.hasOwn(parsed, 'component')) errors.push('registry context.component is required');
+  if (!Object.hasOwn(parsed, 'owners')) errors.push('registry context.owners is required');
+  if (typeof parsed.component !== 'string' || parsed.component.trim() === '') {
+    errors.push('registry context.component must be a non-empty string');
+  }
+  if (!isObject(parsed.owners)) {
+    errors.push('registry context.owners must be an object');
+  } else {
+    for (const [id, owner] of Object.entries(parsed.owners)) {
+      if (!REGISTRY_ID_PATTERN.test(id)) {
+        errors.push(`registry context.owners key ${id} must match ${REGISTRY_ID_PATTERN}`);
+      }
+      if (typeof owner !== 'string' || owner.trim() === '') {
+        errors.push(`registry context.owners.${id} must be a non-empty string`);
+      }
+    }
+  }
+  return errors.length === errorCount ? parsed : null;
+}
+
+function validateRegistryOwnership(id, errors) {
+  if (registryContext === null || typeof id !== 'string') return;
+  const owner = registryContext.owners[id];
+  if (owner !== undefined && owner !== registryContext.component) {
+    errors.push(
+      `registry context ID ${id} is owned by component "${owner}", not current component "${registryContext.component}"`,
+    );
+  }
+}
+
+function validateCategory(categoryName, record, errors) {
+  const path = `coverage.${categoryName}`;
+  const config = CATEGORY_CONFIG[categoryName];
+  if (!isObject(record)) {
+    errors.push(`${path} must be an object`);
+    return [];
+  }
+  addUnknownKeyErrors(record, CATEGORY_KEYS, path, errors);
+  if (!config.statuses.has(record.status)) {
+    errors.push(`${path}.status must be one of ${[...config.statuses].join('|')}`);
+  }
+  if (!Array.isArray(record.items)) {
+    errors.push(`${path}.items must be an array`);
+    return [];
+  }
+
+  const items = record.items;
+  const activeCount = items.filter((item) => isObject(item) && item.state === 'active').length;
+  if (record.status === 'open') {
+    if (record.source !== null) errors.push(`${path}.source must be null when status is "open"`);
+    if (record.source_round !== null) errors.push(`${path}.source_round must be null when status is "open"`);
+    if (activeCount !== 0) errors.push(`${path} must contain no active items when status is "open"`);
+  } else if (record.status === 'confirmed') {
+    if (record.source !== 'user') errors.push(`${path}.source must be "user" when status is "confirmed"`);
+    if (!isNonNegativeInteger(record.source_round)) {
+      errors.push(`${path}.source_round must be a non-negative integer when status is "confirmed"`);
+    }
+    if (categoryName === 'outcome' && activeCount !== 1) {
+      errors.push(`${path} must contain exactly one active item when confirmed`);
+    } else if (categoryName !== 'outcome' && activeCount === 0) {
+      errors.push(`${path} must contain at least one active item when confirmed`);
+    }
+  } else if (record.status === 'explicit_none') {
+    if (record.source !== 'user') errors.push(`${path}.source must be "user" when status is "explicit_none"`);
+    if (!isNonNegativeInteger(record.source_round)) {
+      errors.push(`${path}.source_round must be a non-negative integer when status is "explicit_none"`);
+    }
+    if (activeCount !== 0) errors.push(`${path} must contain no active items when status is "explicit_none"`);
+  }
+
+  const idPattern = new RegExp(`^${config.prefix}[1-9][0-9]*$`);
+  const itemsById = new Map();
+  for (const [index, item] of items.entries()) {
+    const itemPath = `${path}.items[${index}]`;
+    if (!isObject(item)) {
+      errors.push(`${itemPath} must be an object`);
+      continue;
+    }
+    addUnknownKeyErrors(item, ITEM_KEYS, itemPath, errors);
+    if (typeof item.id !== 'string' || !idPattern.test(item.id)) {
+      errors.push(`${itemPath}.id must match ${idPattern}`);
+    } else if (itemsById.has(item.id)) {
+      errors.push(`${path} has duplicate item id ${item.id}`);
+    } else {
+      itemsById.set(item.id, item);
+    }
+    validateRegistryOwnership(item.id, errors);
+    if (typeof item.text !== 'string' || item.text.trim() === '') {
+      errors.push(`${itemPath}.text must be a non-empty string`);
+    }
+    if (item.source !== 'user') errors.push(`${itemPath}.source must be "user"`);
+    if (!isNonNegativeInteger(item.source_round)) {
+      errors.push(`${itemPath}.source_round must be a non-negative integer`);
+    }
+    if (item.state !== 'active' && item.state !== 'superseded') {
+      errors.push(`${itemPath}.state must be one of active|superseded`);
+    }
+    if (item.supersedes !== null && typeof item.supersedes !== 'string') {
+      errors.push(`${itemPath}.supersedes must be null or an item ID`);
+    }
+  }
+
+  const replacementCounts = new Map();
+  for (const [index, item] of items.entries()) {
+    if (!isObject(item) || typeof item.supersedes !== 'string') continue;
+    const itemPath = `${path}.items[${index}]`;
+    const replaced = itemsById.get(item.supersedes);
+    if (!replaced) {
+      errors.push(`${itemPath}.supersedes ${item.supersedes} does not reference an existing item in ${path}`);
+      continue;
+    }
+    if (idPattern.test(item.id) && Number(item.id.slice(1)) <= Number(item.supersedes.slice(1))) {
+      errors.push(`${itemPath}.supersedes must reference an older ID`);
+    }
+    if (replaced.state !== 'superseded') {
+      errors.push(`${itemPath}.supersedes must reference a superseded item`);
+    }
+    replacementCounts.set(item.supersedes, (replacementCounts.get(item.supersedes) ?? 0) + 1);
+  }
+  for (const item of items) {
+    if (!isObject(item) || item.state !== 'superseded' || typeof item.id !== 'string') continue;
+    const replacementCount = replacementCounts.get(item.id) ?? 0;
+    if (replacementCount > 1) errors.push(`${path} item ${item.id} is superseded by multiple items`);
+    if (replacementCount === 0 && record.status !== 'explicit_none') {
+      errors.push(`${path} item ${item.id} is superseded but has no replacement`);
+    }
+  }
+  return items;
+}
+
+function validateCoverage(coverage, acceptanceEvidence, errors) {
+  if (!isObject(coverage)) {
+    errors.push('coverage must be an object');
+    return;
+  }
+  addUnknownKeyErrors(coverage, new Set(COVERAGE_KEYS), 'coverage', errors);
+  const allItems = [];
+  const globalIds = new Set();
+  for (const categoryName of COVERAGE_KEYS) {
+    const items = validateCategory(categoryName, coverage[categoryName], errors);
+    for (const item of items) {
+      if (!isObject(item) || typeof item.id !== 'string') continue;
+      if (globalIds.has(item.id)) errors.push(`coverage has duplicate item id ${item.id}`);
+      globalIds.add(item.id);
+      allItems.push({ categoryName, item });
+    }
+  }
+  validateAcceptanceEvidence(acceptanceEvidence, allItems, errors);
+}
+
+function validateAcceptanceEvidence(entries, allItems, errors) {
+  if (!Array.isArray(entries)) {
+    errors.push('acceptance_evidence must be an array');
+    return;
+  }
+  const eligibleIds = new Set();
+  for (const { categoryName, item } of allItems) {
+    if (!['must_haves', 'must_nots', 'invariants'].includes(categoryName)) continue;
+    const prefix = CATEGORY_CONFIG[categoryName].prefix;
+    if (!new RegExp(`^${prefix}[1-9][0-9]*$`).test(item.id)) continue;
+    eligibleIds.add(item.id);
+  }
+
+  const evidenceIds = new Set();
+  for (const [index, entry] of entries.entries()) {
+    const path = `acceptance_evidence[${index}]`;
+    if (!isObject(entry)) {
+      errors.push(`${path} must be an object`);
+      continue;
+    }
+    addUnknownKeyErrors(entry, EVIDENCE_KEYS, path, errors);
+    if (typeof entry.id !== 'string' || !/^E[1-9][0-9]*$/.test(entry.id)) {
+      errors.push(`${path}.id must match /^E[1-9][0-9]*$/`);
+    } else if (evidenceIds.has(entry.id)) {
+      errors.push(`duplicate acceptance evidence id ${entry.id}`);
+    } else {
+      evidenceIds.add(entry.id);
+    }
+    validateRegistryOwnership(entry.id, errors);
+    if (!Array.isArray(entry.verifies) || entry.verifies.length === 0) {
+      errors.push(`${path}.verifies must be a non-empty array`);
+    } else {
+      const references = new Set();
+      for (const reference of entry.verifies) {
+        if (references.has(reference)) {
+          errors.push(`${path}.verifies contains duplicate reference ${reference}`);
+          continue;
+        }
+        references.add(reference);
+        if (typeof reference !== 'string' || !eligibleIds.has(reference)) {
+          errors.push(`${path}.verifies reference ${reference} must identify an existing M/N/I item`);
+        }
+      }
+    }
+    if (!EVIDENCE_TYPES.has(entry.type)) {
+      errors.push(`${path}.type must be one of ${[...EVIDENCE_TYPES].join('|')}`);
+    }
+    if (typeof entry.pass_condition !== 'string' || entry.pass_condition.trim() === '') {
+      errors.push(`${path}.pass_condition must be a non-empty string`);
+    }
+    if (entry.source !== 'user') {
+      errors.push(`${path}.source must be "user"`);
+    }
+    if (!isNonNegativeInteger(entry.source_round)) {
+      errors.push(`${path}.source_round must be a non-negative integer`);
+    }
+  }
+}
+
+function normalizeCoverage(coverage) {
+  return Object.fromEntries(COVERAGE_KEYS.map((categoryName) => {
+    const record = coverage[categoryName];
+    return [categoryName, {
+      status: record.status,
+      source: record.source,
+      source_round: record.source_round,
+      items: record.items.map((item) => ({
+        id: item.id,
+        text: item.text,
+        source: item.source,
+        source_round: item.source_round,
+        state: item.state,
+        supersedes: item.supersedes,
+      })),
+    }];
+  }));
+}
+
+function normalizeAcceptanceEvidence(entries) {
+  return entries.map((entry) => ({
+    id: entry.id,
+    verifies: [...entry.verifies],
+    type: entry.type,
+    pass_condition: entry.pass_condition,
+    source: entry.source,
+    source_round: entry.source_round,
+  }));
+}
+
 function fail(errors) {
   const retryHint =
     'Re-dispatch the oracle with explicit instruction: '
     + '"Return STRICT JSON only. Required fields: scores{goal,constraints,criteria[,context]}, '
     + 'weakest_dimension in {goal,constraints,criteria,context}, '
-    + 'triggers: array of {dim, type:A|B|C|D}. All scores in [0,1]. No prose, no code fences."';
+    + 'triggers: array of {dim, type:A|B|C|D}, coverage, and acceptance_evidence. '
+    + 'All scores in [0,1]. User provenance must be explicit. No prose, code fences, or unknown keys."';
   process.stdout.write(JSON.stringify({
     ok: false,
     errors,
@@ -82,7 +398,11 @@ function main() {
     fail(['top-level value must be a JSON object']);
   }
 
-  const errors = [];
+  const errors = [...cliErrors];
+  if (registryContextEncoded !== null) {
+    registryContext = parseRegistryContext(registryContextEncoded, errors);
+  }
+  addUnknownKeyErrors(parsed, TOP_LEVEL_KEYS, 'top-level', errors);
 
   // type
   const type = coerceType(parsed.type);
@@ -104,8 +424,8 @@ function main() {
       if (requiredDims.includes(k)) continue; // already type-checked in the required loop
       if (!VALID_DIMS.has(k)) {
         errors.push(`scores.${k} is not a recognized dimension`);
-      } else if (typeof parsed.scores[k] !== 'number' || !Number.isFinite(parsed.scores[k])) {
-        errors.push(`scores.${k} must be a finite number, got: ${JSON.stringify(parsed.scores[k])}`);
+      } else {
+        errors.push(`scores.${k} is not allowed for ${type}; expected exactly ${requiredDims.join('|')}`);
       }
     }
   }
@@ -123,10 +443,11 @@ function main() {
     errors.push('triggers must be an array');
   } else {
     parsed.triggers.forEach((t, i) => {
-      if (!t || typeof t !== 'object') {
+      if (!isObject(t)) {
         errors.push(`triggers[${i}] must be an object`);
         return;
       }
+      addUnknownKeyErrors(t, new Set(['dim', 'type']), `triggers[${i}]`, errors);
       if (!VALID_DIMS.has(t.dim)) {
         errors.push(`triggers[${i}].dim must be one of ${[...VALID_DIMS].join('|')}, got: ${JSON.stringify(t.dim)}`);
       } else if (type === 'greenfield' && t.dim === 'context') {
@@ -138,20 +459,20 @@ function main() {
     });
   }
 
+  validateCoverage(parsed.coverage, parsed.acceptance_evidence, errors);
+
   if (errors.length) fail(errors);
 
   // normalize: clamp scores, ensure all required dims present, track clamp flags
   const normalizedScores = {};
   const clampedFields = [];
-  for (const dim of REQUIRED_DIMS_BROWNFIELD) {
-    if (dim in parsed.scores) {
-      const raw = parsed.scores[dim];
-      // Type already validated above; clamp01 always returns a number here.
-      const r = clamp01(raw);
-      const clamped = r !== raw;
-      if (clamped) clampedFields.push(dim);
-      normalizedScores[dim] = r;
-    }
+  for (const dim of requiredDims) {
+    const raw = parsed.scores[dim];
+    // Type already validated above; clamp01 always returns a number here.
+    const r = clamp01(raw);
+    const clamped = r !== raw;
+    if (clamped) clampedFields.push(dim);
+    normalizedScores[dim] = r;
   }
 
   // triggers pass-through (validated)
@@ -166,6 +487,8 @@ function main() {
       scores: normalizedScores,
       weakest_dimension: parsed.weakest_dimension,
       triggers: normalizedTriggers,
+      coverage: normalizeCoverage(parsed.coverage),
+      acceptance_evidence: normalizeAcceptanceEvidence(parsed.acceptance_evidence),
       // fields below are echoed if oracle provided them; not required
       justification: typeof parsed.justification === 'string' ? parsed.justification : null,
       gap: typeof parsed.gap === 'string' ? parsed.gap : null,

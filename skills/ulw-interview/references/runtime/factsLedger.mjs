@@ -23,6 +23,7 @@ import {
   fsyncSync,
   unlinkSync,
   copyFileSync,
+  statSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
@@ -30,10 +31,26 @@ import { createHash, randomBytes } from 'node:crypto';
 const STATE_VERSION = 1;
 const LOCK_STALE_MS = 5 * 60 * 1000;
 const VALID_CONFIDENCE = ['user', 'explore', 'oracle', 'inferred'];
+const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const SAFE_ID_DESCRIPTION = '[A-Za-z0-9][A-Za-z0-9._-]{0,127}';
+const LOCK_KEYS = ['pid', 'timestamp'];
+const STATE_KEYS = ['entries', 'interview_id', 'last_updated', 'version'];
+const CONFIRMED_ENTRY_KEYS = [
+  'claim',
+  'confidence',
+  'created_at',
+  'disputes',
+  'fact_id',
+  'source_round',
+  'status',
+  'supersedes',
+];
+const DISPUTED_ENTRY_KEYS = [...CONFIRMED_ENTRY_KEYS, 'reason'];
+
+class ControlledCliError extends Error {}
 
 function fail(msg) {
-  process.stderr.write(`factsLedger.mjs: ${msg}\n`);
-  process.exit(1);
+  throw new ControlledCliError(msg);
 }
 
 function readStdinJson() {
@@ -78,6 +95,9 @@ function getInterviewId(options, stdinPayload) {
   if (!id) {
     fail('--interview-id required (or set env ULW_FACTS_LEDGER_ID)');
   }
+  if (typeof id !== 'string' || !SAFE_ID_PATTERN.test(id)) {
+    fail(`--interview-id must match ${SAFE_ID_DESCRIPTION}`);
+  }
   return id;
 }
 
@@ -107,14 +127,82 @@ function emptyState(interviewId) {
   };
 }
 
-function readState(statePath) {
+function hasExactKeys(value, expectedKeys) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const actualKeys = Object.keys(value);
+  return actualKeys.length === expectedKeys.length && expectedKeys.every((key) => Object.hasOwn(value, key));
+}
+
+function isSafeId(value) {
+  return typeof value === 'string' && SAFE_ID_PATTERN.test(value);
+}
+
+function isNonNegativeInteger(value) {
+  return Number.isInteger(value) && value >= 0;
+}
+
+function isoTimestamp(value) {
+  if (typeof value !== 'string') return null;
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString() !== value) return null;
+  return timestamp;
+}
+
+function entryTimestamp(entry, priorIds, priorTimestamp) {
+  const expectedKeys = entry?.status === 'disputed' ? DISPUTED_ENTRY_KEYS : CONFIRMED_ENTRY_KEYS;
+  if (!hasExactKeys(entry, expectedKeys)) return null;
+  if (!isSafeId(entry.fact_id) || priorIds.has(entry.fact_id)) return null;
+  if (!isNonNegativeInteger(entry.source_round)) return null;
+  const timestamp = isoTimestamp(entry.created_at);
+  if (timestamp === null || timestamp < priorTimestamp) return null;
+
+  if (entry.status === 'confirmed') {
+    if (typeof entry.claim !== 'string' || entry.claim.length === 0) return null;
+    if (!VALID_CONFIDENCE.includes(entry.confidence) || entry.disputes !== null) return null;
+    if (entry.supersedes !== null && (!isSafeId(entry.supersedes) || !priorIds.has(entry.supersedes))) return null;
+    return timestamp;
+  }
+
+  if (entry.status === 'disputed') {
+    if (entry.claim !== '' || entry.source_round !== 0 || entry.confidence !== 'inferred') return null;
+    if (!isSafeId(entry.disputes) || !priorIds.has(entry.disputes) || entry.supersedes !== null) return null;
+    if (typeof entry.reason !== 'string' || entry.reason.length === 0) return null;
+    return timestamp;
+  }
+
+  return null;
+}
+
+function isValidState(state, interviewId) {
+  if (!hasExactKeys(state, STATE_KEYS)) return false;
+  if (state.version !== STATE_VERSION || state.interview_id !== interviewId || !Array.isArray(state.entries)) return false;
+
+  const priorIds = new Set();
+  let priorTimestamp = Number.NEGATIVE_INFINITY;
+  for (const entry of state.entries) {
+    const timestamp = entryTimestamp(entry, priorIds, priorTimestamp);
+    if (timestamp === null) return false;
+    priorIds.add(entry.fact_id);
+    priorTimestamp = timestamp;
+  }
+
+  if (state.entries.length === 0) return state.last_updated === null;
+  return state.last_updated === state.entries.at(-1).created_at;
+}
+
+function readState(statePath, interviewId) {
   if (!existsSync(statePath)) return null;
   const raw = readFileSync(statePath, 'utf8');
+  let state;
   try {
-    return JSON.parse(raw);
+    state = JSON.parse(raw);
   } catch {
     fail(`State file corrupted at ${statePath}. Run with --reset`);
   }
+  if (!isValidState(state, interviewId)) {
+    fail(`State file corrupted at ${statePath}. Run with --reset`);
+  }
+  return state;
 }
 
 function acquireLock(lockPath) {
@@ -123,15 +211,20 @@ function acquireLock(lockPath) {
     try {
       lockData = JSON.parse(readFileSync(lockPath, 'utf8'));
     } catch {
-      // unreadable — treat as stale.
+      // Filesystem age below decides whether an unreadable foreign lock is stale.
     }
-    if (lockData && typeof lockData.timestamp === 'number') {
-      const age = Date.now() - lockData.timestamp;
-      if (age < LOCK_STALE_MS) {
-        fail(
-          `Lock held (age ${Math.round(age / 1000)}s, pid ${lockData.pid || 'unknown'}). Refusing to proceed.`,
-        );
-      }
+    const validLockData =
+      hasExactKeys(lockData, LOCK_KEYS) &&
+      isNonNegativeInteger(lockData.pid) &&
+      lockData.pid > 0 &&
+      isNonNegativeInteger(lockData.timestamp);
+    const observedTimestamp = validLockData ? lockData.timestamp : statSync(lockPath).mtimeMs;
+    const age = Date.now() - observedTimestamp;
+    const fresh = validLockData ? age < LOCK_STALE_MS : age <= LOCK_STALE_MS;
+    if (fresh) {
+      fail(
+        `Lock held (age ${Math.round(age / 1000)}s, pid ${validLockData ? lockData.pid : 'unknown'}). Refusing to proceed.`,
+      );
     }
     unlinkSync(lockPath);
   }
@@ -183,10 +276,14 @@ function appendFact(state, options) {
     fail(`--confidence must be one of ${VALID_CONFIDENCE.join('|')}`);
   }
   const sourceRound = Number(sourceRoundRaw);
-  if (!Number.isFinite(sourceRound)) fail('--source-round must be numeric');
+  if (typeof sourceRoundRaw !== 'string' || sourceRoundRaw.trim() === '' || !Number.isFinite(sourceRound)) {
+    fail('--source-round must be numeric');
+  }
+  if (!isNonNegativeInteger(sourceRound)) fail('--source-round must be a non-negative integer');
 
   const factId = options['fact-id'];
-  if (factId) {
+  if (factId !== undefined) {
+    if (!isSafeId(factId)) fail(`--fact-id must match ${SAFE_ID_DESCRIPTION}`);
     const exists = state.entries.some((e) => e.fact_id === factId);
     if (exists) return { appended: false };
   }
@@ -211,6 +308,7 @@ function disputeFact(state, options) {
   const reason = options.reason;
   if (!factId) fail('--fact-id required for dispute');
   if (!reason) fail('--reason required for dispute');
+  if (!isSafeId(factId)) fail(`--fact-id must match ${SAFE_ID_DESCRIPTION}`);
 
   const original = state.entries.find((e) => e.fact_id === factId);
   if (!original) fail(`Cannot dispute non-existent fact ${factId}`);
@@ -239,7 +337,11 @@ function supersedeFact(state, options) {
   if (!claim) fail('--claim required for supersede');
   if (sourceRoundRaw === undefined) fail('--source-round required for supersede');
   const sourceRound = Number(sourceRoundRaw);
-  if (!Number.isFinite(sourceRound)) fail('--source-round must be numeric');
+  if (typeof sourceRoundRaw !== 'string' || sourceRoundRaw.trim() === '' || !Number.isFinite(sourceRound)) {
+    fail('--source-round must be numeric');
+  }
+  if (!isNonNegativeInteger(sourceRound)) fail('--source-round must be a non-negative integer');
+  if (!isSafeId(factId)) fail(`--fact-id must match ${SAFE_ID_DESCRIPTION}`);
 
   const original = state.entries.find((e) => e.fact_id === factId);
   if (!original) fail(`Cannot supersede non-existent fact ${factId}`);
@@ -310,10 +412,7 @@ function main() {
 
   acquireLock(lockPath);
   try {
-    const state = readState(statePath) || emptyState(interviewId);
-    if (!Array.isArray(state.entries)) {
-      fail(`State file corrupted at ${statePath}. Run with --reset`);
-    }
+    const state = readState(statePath, interviewId) || emptyState(interviewId);
     let output;
     switch (command) {
       case 'append':
@@ -344,4 +443,13 @@ function main() {
   }
 }
 
-main();
+try {
+  main();
+} catch (error) {
+  if (error instanceof ControlledCliError) {
+    process.stderr.write(`factsLedger.mjs: ${error.message}\n`);
+    process.exitCode = 1;
+  } else {
+    throw error;
+  }
+}
