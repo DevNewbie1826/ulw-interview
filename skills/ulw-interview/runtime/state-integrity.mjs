@@ -163,6 +163,37 @@ export function assertAllDimensionsClear(state) {
   if ((state.allDimensionsClear === true) !== expected) throw new StateValidationError('allDimensionsClear is inconsistent');
 }
 
+function deriveThresholdCrossingConfirmation(state) {
+  let flag = false;
+  let priorEffective = 1;
+  const scored = state.rounds
+    .filter((round) => round.lifecycle === 'scored')
+    .slice()
+    .sort((left, right) => left.round - right.round);
+  for (const round of scored) {
+    const effective = round.ambiguity;
+    if (effective > state.threshold) flag = false;
+    else if (round.answer?.kind === 'user') flag = false;
+    else flag = flag || priorEffective > state.threshold;
+    priorEffective = effective;
+  }
+  return flag;
+}
+
+export function assertThresholdCrossingConfirmation(state) {
+  if (state.closurePassed === true) {
+    if (state.pendingThresholdCrossingConfirmation === true) {
+      throw new StateValidationError('pendingThresholdCrossingConfirmation is inconsistent');
+    }
+    return;
+  }
+  if ((state.restateLoops ?? 0) > 0) return;
+  const expected = deriveThresholdCrossingConfirmation(state);
+  if ((state.pendingThresholdCrossingConfirmation === true) !== expected) {
+    throw new StateValidationError('pendingThresholdCrossingConfirmation is inconsistent');
+  }
+}
+
 export function assertDerivedMetrics(state) {
   if (state.phase === 'topology') {
     if (state.ambiguity !== 1 || state.reportedAmbiguity !== 1 || state.band !== 'initial') {

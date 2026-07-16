@@ -6,6 +6,7 @@ import {
   assertInitStamp,
   assertPendingRoundDerivedFields,
   assertScoredRoundIntegrity,
+  assertThresholdCrossingConfirmation,
   assertTopologyStamp,
 } from './state-integrity.mjs';
 import {
@@ -187,6 +188,8 @@ export function assertRuntimeState(rawState) {
     throw new StateValidationError('write phases require closurePassed and restatementConfirmed');
   }
   assertDerivedMetrics(state);
+  assertAllDimensionsClear(state);
+  assertThresholdCrossingConfirmation(state);
   assertAllDimensionsClear(state);
   return state;
 }

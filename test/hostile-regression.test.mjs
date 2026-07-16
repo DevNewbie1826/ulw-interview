@@ -196,3 +196,20 @@ test('DI-HOSTILE-013 rejects audit_closure with a tampered allDimensionsClear fl
 
   assertRejected(event(out.state, 'audit_closure', { passed: true }), 'DI-HOSTILE-013');
 });
+
+test('DI-HOSTILE-014 rejects audit_closure with a tampered pendingThresholdCrossingConfirmation flag', () => {
+  let out = ok(event(null, 'initialize', { interviewId: 'repro-crossing-tamper', type: 'greenfield', idea: 'x', threshold: 0.05, thresholdSource: 'default' }));
+  out = ok(event(out.state, 'confirm_topology', { components: [{ id: 'c1', name: 'C1', status: 'active' }], confirmedAt }));
+  out = ok(event(out.state, 'open_round', { round: 1, questionId: 'q1', question: 'q1', target: out.effects[0].target }));
+  out = ok(event(out.state, 'submit_answer', { round: 1, answer: { kind: 'agent', text: 'agent decides', source: 'agent', confidence: 'high', uncertainty: 0 } }));
+  out = ok(event(out.state, 'panel_completed', { findings: findings() }));
+  out = ok(event(out.state, 'record_score', { round: 1, componentScores: { c1: { goal: 0.95, constraints: 0.95, criteria: 0.95 } }, weakestComponentId: 'c1', weakestDimension: 'goal' }));
+
+  assert.equal(out.state.pendingThresholdCrossingConfirmation, true);
+  assert.equal(out.effects.at(-1).type, 'request_closure_audit');
+  assert.equal(out.effects.at(-1).thresholdCrossingConfirmation, true);
+  assertRejected(event(out.state, 'audit_closure', { passed: true }), 'DI-HOSTILE-014 control (unconfirmed crossing must reject)');
+
+  out.state.pendingThresholdCrossingConfirmation = false;
+  assertRejected(event(out.state, 'audit_closure', { passed: true }), 'DI-HOSTILE-014');
+});
