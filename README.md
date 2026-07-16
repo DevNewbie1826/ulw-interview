@@ -128,6 +128,16 @@ npm test
 
 The suite uses `node:test` and includes unit scoring fixtures, contract-level runtime tests, prompt/docs checks, plugin registration, and real-CLI lifecycle tests that carry JSON state between subprocess calls.
 
+## Intentional omissions
+
+- gajae Phase 0.75 --trace native seed: omitted because this package ships the portable skill/runtime only, not the seed trace harness.
+- >6 component grouping: omitted because this runtime rejects more than six components by design.
+- legacy_missing topology migration: omitted because this build accepts new-format states only.
+- .gjc paths and gjc CLI: omitted because they are host-specific gajae artifacts, not part of this package.
+- ask-tool deepInterview.* metadata: omitted because the skill uses the Node JSON protocol, not ask-tool metadata.
+- ralplan/ultragoal/team handoffs: omitted because the runtime is single-path and does not expose those handoff modes.
+- codebase_context state field: omitted because host context is folded into the scoring prompt instead of stored in state.
+
 ## License
 
 MIT. See [LICENSE](./LICENSE).
