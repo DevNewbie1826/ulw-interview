@@ -238,20 +238,20 @@ test('S-RETRACT disputes facts from a replaced round and raises the immediate fl
   const components = [{ id: 'ledger', name: 'Ledger', status: 'active' }];
   let output = confirmTopology(initialize('e2e-retract', { threshold: 0.01, thresholdSource: 'host' }).state, components);
 
-  output = driveScoredRound(output.state, output.effects[0], { round: 1, componentScores: scoreAll(components, 0.95) });
+  output = driveScoredRound(output.state, output.effects[0], { round: 1, componentScores: scoreAll(components, 0.85) });
   output = completeMilestonePanel(output, 'open_round');
 
   output = driveScoredRound(output.state, output.effects[0], {
     round: 2,
     answer: 'The ledger exports one immutable audit file.',
-    componentScores: scoreAll(components, 0.95),
+    componentScores: scoreAll(components, 0.85),
     scoreInput: {
       establishedFacts: [{ id: 'F-ledger-export', statement: 'The ledger exports one immutable audit file.', component: 'ledger', dimension: 'criteria' }],
     },
   });
   assertEffects(output, ['report_progress', 'open_round']);
   assert.equal(output.state.facts[0].disputed, false);
-  assert.equal(output.state.ambiguity, 0.05);
+  assert.equal(output.state.ambiguity, 0.15);
 
   output = submitUserAnswer(output.state, 2, 'Actually, the ledger exports two files with different retention.', { replacesRound: 2 });
   assert.equal(output.state.facts[0].disputed, true);

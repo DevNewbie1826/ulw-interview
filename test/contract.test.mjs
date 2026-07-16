@@ -488,3 +488,25 @@ test('DI-CONTRACT-NEW-014 closes fast when every required dimension is at least 
   assert.equal(scored.output.state.phase, 'closure');
   assert.equal(scored.output.state.ambiguity, 0.05);
 });
+
+
+test('DI-CONTRACT-NEW-015 closes fast when every dimension is at least 0.9 even above threshold and before round minimum', () => {
+  const components = [{ id: 'c1', name: 'Component 1', status: 'active' }];
+  let output = confirmContractTopology(initializeContract('contract-all-clear').state, components);
+  output = openContractRound(output.state, output.effects[0], 'q1');
+  output = submitContractAnswer(output.state, 1, { kind: 'user', text: 'Answer 1.', source: 'direct' });
+  const scored = scoreContractRound(output.state, 1, scoreAll(components, 0.9));
+
+  assert.equal(scored.status, 0, scored.stderr);
+  assert.equal(scored.output.state.ambiguity, 0.1);
+  assert.equal(scored.output.state.ambiguity > scored.output.state.threshold, true);
+  assert.deepEqual(scored.output.effects.map((effect) => effect.type), ['report_progress', 'request_closure_audit']);
+  assert.equal(scored.output.effects[1].reason, 'all-clear');
+  assert.equal(scored.output.state.phase, 'closure');
+  assert.equal(scored.output.state.allDimensionsClear, true);
+
+  const closure = event(scored.output.state, 'audit_closure', { passed: true, rationale: 'all dimensions clear' });
+  assert.equal(closure.status, 0, closure.stderr);
+  assert.equal(closure.output.state.closurePassed, true);
+  assert.equal(closure.output.state.phase, 'restate');
+});

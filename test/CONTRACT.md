@@ -72,6 +72,7 @@ All state is JSON-serializable and validated before every non-`initialize` event
 | `softWarningShown` | boolean | `false` |
 | `hardCapReached` | boolean | `false` |
 | `earlyExitRequested` | boolean | `false` |
+| `allDimensionsClear` | boolean | `false`; set when every active component's required dimensions are all `>=0.9` with no unresolved disputed facts |
 
 ### Topology component
 
@@ -105,7 +106,7 @@ Effects are returned in exact order. The host owns rendering, model calls, and f
 | `run_lateral_panel` | `round?`, `reason:'pre-answer'|'milestone'`, `personas:['analyst','critic']`, `architectLens:boolean`, milestone payload may include `priorBand`, `band` |
 | `score_answer` | `round` |
 | `report_progress` | `round?`, `reported`, `floor`, `effective`, `band`, `bandChanged`, `clamped`, `stallDetected`, `escalation`, `weakest`, `triggerSummary` |
-| `request_closure_audit` | `reason:'ready'|'hard-cap'|'early-exit'`, optional `thresholdCrossingConfirmation:true` |
+| `request_closure_audit` | `reason:'ready'|'hard-cap'|'early-exit'|'all-clear'`, optional `thresholdCrossingConfirmation:true` |
 | `request_restate` | `summary` |
 | `write_spec` | no required payload |
 | `persist_spec` | `directory`, `slug`, `markdown`, `status` before CLI; CLI result is `path`, `sha256` |
@@ -169,7 +170,7 @@ Rules:
 
 Agent threshold crossing gate: when `answer.kind === 'agent'`, the prior effective ambiguity was above `threshold` (initially seeded as `1.0`), and the new effective ambiguity is `<= threshold`, set `pendingThresholdCrossingConfirmation:true` and include `thresholdCrossingConfirmation:true` on the `request_closure_audit` effect. User-kind answers never set this flag; a subsequent user-scored answer or any later score above threshold clears it.
 
-Effects: first `report_progress`, then exactly one continuation: hard cap requests closure audit; ready requests closure audit; band changes run the lateral panel; otherwise open the next round. On the 10th scored round that does not close, set `softWarningShown` and include `softWarning:true` in `open_round`.
+Effects: first `report_progress`, then exactly one continuation: hard cap requests closure audit; `effective <= threshold` requests closure audit with reason `ready`; otherwise, when every active component's required dimensions are all `>=0.9` and no unresolved disputed fact exists, requests closure audit with reason `all-clear` and sets `allDimensionsClear:true` (gajae all-dims-0.9 fast path — fires even above threshold and before the round minimum); band changes run the lateral panel; otherwise open the next round. On the 10th scored round that does not close, set `softWarningShown` and include `softWarning:true` in `open_round`.
 
 ### `record_fact`
 
@@ -185,7 +186,7 @@ Input: `{}`. Allowed only when `scoredRounds >= 3` or `softWarningShown` or `har
 
 ### `audit_closure`
 
-Input: `{ passed:boolean, overrideGap?, rationale?, userConfirmedCrossing? }`. Required phase: `closure`. Passing is rejected when unresolved disputed facts exist. Passing also requires `effective <= threshold` or `hardCapReached` or `earlyExitRequested`. While `pendingThresholdCrossingConfirmation:true`, passing is rejected unless `userConfirmedCrossing === true`; confirmed passing clears the flag. Failed audits do not require crossing confirmation and still use the override path. If passed, set `closurePassed:true`, phase `restate`, effect `request_restate`. If failed, record `overrideGap` in `closureOverrides` when supplied, phase `round`, effect `open_round` for the current runtime-selected target.
+Input: `{ passed:boolean, overrideGap?, rationale?, userConfirmedCrossing? }`. Required phase: `closure`. Passing is rejected when unresolved disputed facts exist. Passing also requires `effective <= threshold` or `hardCapReached` or `earlyExitRequested` or `allDimensionsClear`. While `pendingThresholdCrossingConfirmation:true`, passing is rejected unless `userConfirmedCrossing === true`; confirmed passing clears the flag. Failed audits do not require crossing confirmation and still use the override path. If passed, set `closurePassed:true`, phase `restate`, effect `request_restate`. If failed, record `overrideGap` in `closureOverrides` when supplied, phase `round`, effect `open_round` for the current runtime-selected target.
 
 ### `confirm_restate`
 

@@ -1,4 +1,4 @@
-import { calculateAmbiguity } from './ambiguity-floor.mjs';
+import { calculateAmbiguity, unresolvedDisputeCount } from './ambiguity-floor.mjs';
 import { appendEstablishedFacts, disputeFacts } from './fact-ledger.mjs';
 import { normalizeComponentScores, normalizeOntology, normalizeTriggers, ontologySnapshot, panelPersonas, validateActiveTriggers } from './round-recorder.mjs';
 import {
@@ -10,6 +10,7 @@ import {
   clone,
   scoringHash,
   topologyComponents,
+  requiredDimensions,
 } from './state.mjs';
 import { copyState, effect, nextTarget, progressEffect, replaceComponents, scoredRounds, weakestForComponents } from './transition-support.mjs';
 
@@ -78,6 +79,13 @@ function nextThresholdCrossingConfirmation(state, answer, effectiveAmbiguity) {
   return state.pendingThresholdCrossingConfirmation === true || state.ambiguity > state.threshold;
 }
 
+function allDimensionsClear(type, components) {
+  const required = requiredDimensions(type);
+  return components
+    .filter((component) => component.status === 'active')
+    .every((component) => required.every((dimension) => (component.clarity?.[dimension] ?? 0) >= 0.9));
+}
+
 function continuation({ state, previousBand, scoredCount, weakest }) {
   if (scoredCount >= MAX_ROUNDS) {
     const closed = copyState(state, { phase: 'closure', hardCapReached: true });
@@ -86,6 +94,10 @@ function continuation({ state, previousBand, scoredCount, weakest }) {
   if (state.ambiguity <= state.threshold) {
     const closed = copyState(state, { phase: 'closure' });
     return { state: closed, effect: closureAuditEffect(closed, 'ready') };
+  }
+  if (state.allDimensionsClear === true) {
+    const closed = copyState(state, { phase: 'closure' });
+    return { state: closed, effect: closureAuditEffect(closed, 'all-clear') };
   }
   const nextOpen = effect('open_round', {
     round: state.rounds.length + 1,
@@ -157,6 +169,7 @@ export function recordScore(state, input) {
   const disputed = triggerDisputes(state, triggers, state.pendingRound.round);
   const established = appendEstablishedFacts({ ...state, facts: disputed.facts, factEvents: disputed.factEvents }, input.establishedFacts ?? [], state.pendingRound.round);
   const components = updateTopologyScores(state, componentScores);
+  const allClear = allDimensionsClear(state.type, components) && unresolvedDisputeCount(established.facts) === 0;
   const metricsBeforeRound = computeMetrics(state, components, established.facts, state.rounds);
   const ontology = normalizeOntology(input.ontology);
   const snapshot = ontology === null ? null : ontologySnapshot(state.pendingRound.round, ontology, state.ontologySnapshots);
@@ -189,6 +202,7 @@ export function recordScore(state, input) {
     ambiguityFloor: metrics.floorBreakdown,
     ambiguity: metrics.effective,
     band: metrics.band,
+    allDimensionsClear: allClear,
     pendingThresholdCrossingConfirmation,
   });
   const scoredCount = scoredRounds(measured).length;

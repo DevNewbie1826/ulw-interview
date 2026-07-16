@@ -145,6 +145,7 @@ export function canonicalizeState(rawState) {
     restatedGoal: state.restatedGoal ?? null,
     softWarningShown: state.softWarningShown === true,
     hardCapReached: state.hardCapReached === true,
+    allDimensionsClear: state.allDimensionsClear === true,
     earlyExitRequested: state.earlyExitRequested === true,
   };
 }
@@ -195,6 +196,7 @@ export function createInitialState(input) {
     restatedGoal: null,
     softWarningShown: false,
     hardCapReached: false,
+    allDimensionsClear: false,
     earlyExitRequested: false,
   };
 }

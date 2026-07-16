@@ -73,7 +73,7 @@ export function auditClosure(state, input) {
   assertObject(input, 'audit_closure input');
   if (input.passed === true) {
     if (state.facts.some(isUnresolvedDisputed)) throw new TransitionError('closure pass rejected with unresolved disputed facts');
-    if (state.ambiguity > state.threshold && !state.hardCapReached && !state.earlyExitRequested) {
+    if (state.ambiguity > state.threshold && !state.hardCapReached && !state.earlyExitRequested && state.allDimensionsClear !== true) {
       throw new TransitionError('closure pass requires threshold, hardCap, or earlyExit');
     }
     if (state.pendingThresholdCrossingConfirmation && input.userConfirmedCrossing !== true) {
