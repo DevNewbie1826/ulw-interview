@@ -72,15 +72,20 @@ function assertTopology(state) {
     throw new StateValidationError('confirmed topology requires components');
   }
   const ids = new Set();
+  const activeIds = new Set();
   for (const component of topology.components) {
     assertObject(component, 'topology component');
     if (ids.has(component.id)) throw new StateValidationError('topology component ids must be unique');
     ids.add(component.id);
     if (component.status !== 'active' && component.status !== 'deferred') throw new StateValidationError('component status is invalid');
     if (component.status === 'active') validateScoresOrPartial(component.clarity, state.type, `component ${component.id}.clarity`);
+    if (component.status === 'active') activeIds.add(component.id);
   }
   if (state.topologyStatus === 'confirmed' && !topology.components.some((component) => component.status === 'active')) {
     throw new StateValidationError('confirmed topology requires an active component');
+  }
+  if (topology.lastTargetedComponentId !== null && !activeIds.has(topology.lastTargetedComponentId)) {
+    throw new StateValidationError('topology.lastTargetedComponentId must be null or an active component id');
   }
 }
 
@@ -155,6 +160,9 @@ export function assertRuntimeState(rawState) {
   assertStateSize(state);
   if (state.version !== 2) throw new StateValidationError('state.version is invalid');
   if (!PHASES.includes(state.phase)) throw new StateValidationError('state.phase is invalid');
+  if (typeof state.pendingThresholdCrossingConfirmation !== 'boolean') {
+    throw new StateValidationError('state.pendingThresholdCrossingConfirmation must be a boolean');
+  }
   assertInterviewId(state.interviewId);
   assertInterviewType(state.type);
   assertThreshold(state.threshold);

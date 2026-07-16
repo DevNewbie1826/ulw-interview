@@ -46,7 +46,13 @@ export function componentScores(component) {
   return component.clarity ?? {};
 }
 
-export function weakestForComponents(type, components) {
+function rotatedLeader(leaders, lastTargetedComponentId) {
+  if (leaders.length === 1) return leaders[0];
+  const lastIndex = leaders.findIndex((candidate) => candidate.component.id === lastTargetedComponentId);
+  return leaders[lastIndex === -1 || lastIndex === leaders.length - 1 ? 0 : lastIndex + 1];
+}
+
+export function weakestForComponents(type, components, lastTargetedComponentId = null) {
   const dimensions = requiredDimensions(type);
   const candidates = components.filter((component) => component.status === 'active').map((component) => {
     const clarity = componentScores(component);
@@ -58,17 +64,24 @@ export function weakestForComponents(type, components) {
     return { component, dimension, ambiguity: componentAmbiguity(type, clarity) };
   });
   if (candidates.length === 0) throw new TransitionError('no active component is available');
-  candidates.sort((left, right) => right.ambiguity - left.ambiguity || compareIds(left.component.id, right.component.id));
-  return { componentId: candidates[0].component.id, dimension: candidates[0].dimension };
+  const highestAmbiguity = Math.max(...candidates.map((candidate) => candidate.ambiguity));
+  const leaders = candidates
+    .filter((candidate) => candidate.ambiguity === highestAmbiguity)
+    .sort((left, right) => compareIds(left.component.id, right.component.id));
+  const selected = rotatedLeader(leaders, lastTargetedComponentId);
+  return { componentId: selected.component.id, dimension: selected.dimension };
 }
 
-export function nextTarget(state) {
+export function nextTarget(state, options = {}) {
   const components = activeComponents(state);
   if (components.length === 0) throw new TransitionError('no active component is available');
   if (state.rounds.length === 0 && components.every((component) => Object.keys(component.clarity ?? {}).length === 0)) {
-    return { componentId: components[0].id, dimension: requiredDimensions(state.type)[0] };
+    const [first] = [...components].sort((left, right) => compareIds(left.id, right.id));
+    return { componentId: first.id, dimension: requiredDimensions(state.type)[0] };
   }
-  return weakestForComponents(state.type, components);
+  const hasOverride = Object.hasOwn(options, 'lastTargetedComponentId');
+  const lastTargetedComponentId = hasOverride ? options.lastTargetedComponentId : state.topology?.lastTargetedComponentId ?? null;
+  return weakestForComponents(state.type, components, lastTargetedComponentId);
 }
 
 export function nextRoundNumber(state) {
@@ -103,6 +116,12 @@ export function withMetrics(state) {
 
 export function scoredRounds(state) {
   return state.rounds.filter((round) => round.lifecycle === 'scored');
+}
+
+export function nextTargetForPendingRound(state) {
+  const scored = scoredRounds(state);
+  const lastScored = scored.length === 0 ? null : scored[scored.length - 1];
+  return nextTarget(state, { lastTargetedComponentId: lastScored?.target?.componentId ?? null });
 }
 
 export function hasPendingWork(state) {

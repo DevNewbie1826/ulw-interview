@@ -13,7 +13,7 @@ import {
   topologyFingerprint,
   validateScores,
 } from './state.mjs';
-import { weakestForComponents } from './transition-support.mjs';
+import { nextTargetForPendingRound } from './transition-support.mjs';
 
 function sameTarget(left, right) {
   return left?.componentId === right?.componentId && left?.dimension === right?.dimension;
@@ -57,13 +57,7 @@ function expectedPendingTarget(state) {
     if (!prior) throw new StateValidationError('pending replacement references an unknown scored round');
     return prior.target;
   }
-  const components = topologyComponents(state);
-  if (state.rounds.length === 0 && components.every((component) => Object.keys(component.clarity ?? {}).length === 0)) {
-    const firstActive = components.find((component) => component.status === 'active');
-    if (!firstActive) throw new StateValidationError('pendingRound target component is invalid');
-    return { componentId: firstActive.id, dimension: requiredDimensions(state.type)[0] };
-  }
-  return weakestForComponents(state.type, components);
+  return nextTargetForPendingRound(state);
 }
 
 function replayFactEvents(events) {

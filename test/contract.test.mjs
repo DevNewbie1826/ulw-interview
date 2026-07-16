@@ -378,3 +378,113 @@ test('DI-CONTRACT-NEW-011 submit_answer rejects a double submit for the same rou
   assert.notEqual(replay.status, 0);
   assert.match(replay.stderr, /already recorded/i);
 });
+
+function okContract(result) {
+  assert.equal(result.status, 0, result.stderr);
+  assert.notEqual(result.output, null);
+  return result.output;
+}
+
+function contractComponents() {
+  return [
+    { id: 'c-a', name: 'Component A', status: 'active' },
+    { id: 'c-b', name: 'Component B', status: 'active' },
+  ];
+}
+
+function initializeContract(interviewId, input = {}) {
+  return okContract(event(null, 'initialize', {
+    interviewId,
+    type: 'greenfield',
+    idea: 'Clarify a workflow before implementation.',
+    ...input,
+  }));
+}
+
+function confirmContractTopology(state, components = contractComponents()) {
+  return okContract(event(state, 'confirm_topology', { components, confirmedAt: '2026-07-17T00:00:00.000Z' }));
+}
+
+function openContractRound(state, openEffect, questionId = `q${openEffect.round}`) {
+  return okContract(event(state, 'open_round', {
+    round: openEffect.round,
+    questionId,
+    question: `Question ${questionId}`,
+    target: openEffect.target,
+  }));
+}
+
+function submitContractAnswer(state, round, answer) {
+  return okContract(event(state, 'submit_answer', { round, answer }));
+}
+
+function scoreContractRound(state, round, componentScores, extra = {}) {
+  return event(state, 'record_score', {
+    round,
+    componentScores,
+    weakestComponentId: Object.keys(componentScores)[0],
+    weakestDimension: 'goal',
+    weakestRationale: 'The host follows the runtime-selected weakest target.',
+    ...extra,
+  });
+}
+
+function scoreAll(components, score) {
+  return Object.fromEntries(components.map((component) => [component.id, { goal: score, constraints: score, criteria: score }]));
+}
+
+test('DI-CONTRACT-NEW-012 rotates across tied active components instead of re-targeting the lexicographic winner', () => {
+  const components = contractComponents();
+  let output = confirmContractTopology(initializeContract('contract-rotate-ties').state, components);
+  assert.deepEqual(output.effects[0].target, { componentId: 'c-a', dimension: 'goal' });
+  output = openContractRound(output.state, output.effects[0], 'q1');
+  output = submitContractAnswer(output.state, 1, { kind: 'user', text: 'Answer 1.', source: 'direct' });
+  const scored = scoreContractRound(output.state, 1, scoreAll(components, 0.4));
+
+  assert.equal(scored.status, 0, scored.stderr);
+  assert.equal(scored.output.state.topology.lastTargetedComponentId, 'c-a');
+  if (scored.output.effects[1].type === 'run_lateral_panel') {
+    assert.deepEqual(scored.output.state.pendingPanel.nextEffect, { type: 'open_round', round: 2, target: { componentId: 'c-b', dimension: 'goal' } });
+    const completed = event(scored.output.state, 'panel_completed', { findings: panelFindings() });
+    assert.equal(completed.status, 0, completed.stderr);
+    assert.deepEqual(completed.output.effects[0], { type: 'open_round', round: 2, target: { componentId: 'c-b', dimension: 'goal' } });
+    return;
+  }
+  assert.deepEqual(scored.output.effects[1], { type: 'open_round', round: 2, target: { componentId: 'c-b', dimension: 'goal' } });
+});
+
+test('DI-CONTRACT-NEW-013 threshold crossing by an agent answer requires explicit user confirmation before closure can pass', () => {
+  const components = [{ id: 'c1', name: 'Component 1', status: 'active' }];
+  let output = confirmContractTopology(initializeContract('contract-threshold-crossing').state, components);
+  output = openContractRound(output.state, output.effects[0], 'q1');
+  output = submitContractAnswer(output.state, 1, { kind: 'agent', text: 'Agent answer 1.', source: 'agent', confidence: 'high', uncertainty: 0.05 });
+  output = okContract(event(output.state, 'panel_completed', { findings: panelFindings() }));
+  const scored = scoreContractRound(output.state, 1, scoreAll(components, 0.99));
+
+  assert.equal(scored.status, 0, scored.stderr);
+  assert.equal(scored.output.effects[1].type, 'request_closure_audit');
+  assert.equal(scored.output.state.pendingThresholdCrossingConfirmation, true);
+
+  const unconfirmed = event(scored.output.state, 'audit_closure', { passed: true, rationale: 'Ready without explicit user confirmation.' });
+  assert.notEqual(unconfirmed.status, 0);
+  assert.equal(unconfirmed.stdout, '');
+  assert.match(unconfirmed.stderr, /userConfirmedCrossing|threshold crossing/i);
+
+  const confirmed = event(scored.output.state, 'audit_closure', { passed: true, rationale: 'User confirmed threshold crossing.', userConfirmedCrossing: true });
+  assert.equal(confirmed.status, 0, confirmed.stderr);
+  assert.deepEqual(confirmed.output.effects[0].type, 'request_restate');
+});
+
+test('DI-CONTRACT-NEW-014 closes fast when every required dimension is at least 0.9 and effective ambiguity is below threshold on round 1', () => {
+  const components = [{ id: 'c1', name: 'Component 1', status: 'active' }];
+  let output = confirmContractTopology(initializeContract('contract-fast-closure').state, components);
+  output = openContractRound(output.state, output.effects[0], 'q1');
+  output = submitContractAnswer(output.state, 1, { kind: 'user', text: 'Answer 1.', source: 'direct' });
+  const scored = scoreContractRound(output.state, 1, scoreAll(components, 0.95));
+
+  assert.equal(scored.status, 0, scored.stderr);
+  assert.deepEqual(scored.output.effects.map((effect) => effect.type), ['report_progress', 'request_closure_audit']);
+  assert.equal(scored.output.effects[1].reason, 'ready');
+  assert.equal(scored.output.state.phase, 'closure');
+  assert.equal(scored.output.state.ambiguity, 0.05);
+});

@@ -76,8 +76,11 @@ export function auditClosure(state, input) {
     if (state.ambiguity > state.threshold && !state.hardCapReached && !state.earlyExitRequested) {
       throw new TransitionError('closure pass requires threshold, hardCap, or earlyExit');
     }
+    if (state.pendingThresholdCrossingConfirmation && input.userConfirmedCrossing !== true) {
+      throw new TransitionError('threshold crossing requires userConfirmedCrossing true before closure can pass');
+    }
     return {
-      state: copyState(state, { closurePassed: true, phase: 'restate' }),
+      state: copyState(state, { closurePassed: true, phase: 'restate', pendingThresholdCrossingConfirmation: false }),
       effects: [effect('request_restate', { summary: { rounds: scoredRounds(state).length, ambiguity: state.ambiguity, band: state.band } })],
     };
   }

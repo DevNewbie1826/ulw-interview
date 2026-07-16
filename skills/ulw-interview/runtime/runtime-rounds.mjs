@@ -13,7 +13,7 @@ import {
   topologyFingerprint,
 } from './state.mjs';
 import { assertPanelFindings, normalizeAnswer } from './runtime-round-validation.mjs';
-import { assertPhase, copyState, effect, nextRoundNumber, nextTarget, withMetrics } from './transition-support.mjs';
+import { assertPhase, copyState, effect, nextRoundNumber, nextTarget, nextTargetForPendingRound, withMetrics } from './transition-support.mjs';
 
 function assertNoPending(state) {
   if (state.pendingRound || state.pendingPanel || state.pendingRefinement) {
@@ -26,7 +26,7 @@ function sameTarget(left, right) {
 }
 
 function assertPendingTarget(state) {
-  if (!sameTarget(state.pendingRound?.target, nextTarget(state))) {
+  if (!sameTarget(state.pendingRound?.target, nextTargetForPendingRound(state))) {
     throw new TransitionError('pendingRound target must match the runtime-selected target');
   }
 }
@@ -71,7 +71,9 @@ export function confirmTopology(state, input) {
     lastTargetedComponentId: null,
   };
   const measured = withMetrics(copyState(state, { phase: 'round', topologyStatus: 'confirmed', topology, topologyHash: topologyFingerprint(components) }));
-  return { state: measured, effects: [effect('open_round', { round: 1, target: nextTarget(measured) })] };
+  const target = nextTarget(measured);
+  const targeted = copyState(measured, { topology: { ...measured.topology, lastTargetedComponentId: target.componentId } });
+  return { state: targeted, effects: [effect('open_round', { round: 1, target })] };
 }
 
 export function openRound(state, input) {

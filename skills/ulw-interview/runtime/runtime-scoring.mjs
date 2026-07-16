@@ -65,13 +65,27 @@ function triggerSummary(triggers) {
   return triggers.map((trigger) => ({ kind: trigger.kind, status: trigger.status, component: trigger.component, dimension: trigger.dimension }));
 }
 
+function closureAuditEffect(state, reason) {
+  return effect('request_closure_audit', {
+    reason,
+    ...(state.pendingThresholdCrossingConfirmation ? { thresholdCrossingConfirmation: true } : {}),
+  });
+}
+
+function nextThresholdCrossingConfirmation(state, answer, effectiveAmbiguity) {
+  if (effectiveAmbiguity > state.threshold) return false;
+  if (answer.kind === 'user') return false;
+  return state.pendingThresholdCrossingConfirmation === true || state.ambiguity > state.threshold;
+}
+
 function continuation({ state, previousBand, scoredCount, weakest }) {
   if (scoredCount >= MAX_ROUNDS) {
     const closed = copyState(state, { phase: 'closure', hardCapReached: true });
-    return { state: closed, effect: effect('request_closure_audit', { reason: 'hard-cap' }) };
+    return { state: closed, effect: closureAuditEffect(closed, 'hard-cap') };
   }
   if (state.ambiguity <= state.threshold) {
-    return { state: copyState(state, { phase: 'closure' }), effect: effect('request_closure_audit', { reason: 'ready' }) };
+    const closed = copyState(state, { phase: 'closure' });
+    return { state: closed, effect: closureAuditEffect(closed, 'ready') };
   }
   const nextOpen = effect('open_round', {
     round: state.rounds.length + 1,
@@ -103,7 +117,7 @@ function continuation({ state, previousBand, scoredCount, weakest }) {
 
 function buildRoundRecord({ state, input, componentScores, triggers, metrics, ontology }) {
   const pending = state.pendingRound;
-  const weakest = weakestForComponents(state.type, updateTopologyScores(state, componentScores));
+  const weakest = weakestForComponents(state.type, updateTopologyScores(state, componentScores), state.topology.lastTargetedComponentId);
   return {
     round: pending.round,
     roundKey: pending.roundKey,
@@ -161,6 +175,7 @@ export function recordScore(state, input) {
   };
   rounds = replaceOrAppendRound(state.rounds, roundRecord);
   const ontologySnapshots = snapshot === null ? state.ontologySnapshots : [...state.ontologySnapshots, snapshot];
+  const pendingThresholdCrossingConfirmation = nextThresholdCrossingConfirmation(state, answer, metrics.effective);
   const measured = copyState(state, {
     topology: replaceComponents(state, components),
     facts: established.facts,
@@ -174,6 +189,7 @@ export function recordScore(state, input) {
     ambiguityFloor: metrics.floorBreakdown,
     ambiguity: metrics.effective,
     band: metrics.band,
+    pendingThresholdCrossingConfirmation,
   });
   const scoredCount = scoredRounds(measured).length;
   const stall = stallDetected(measured.rounds);

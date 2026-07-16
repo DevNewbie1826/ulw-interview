@@ -56,6 +56,7 @@ All state is JSON-serializable and validated before every non-`initialize` event
 | `pendingRound` | object or `null` | `null`; mutually exclusive with `pendingPanel` and `pendingRefinement` |
 | `pendingPanel` | object or `null` | `null`; mutually exclusive with `pendingRound` except when blocking its answer/continuation |
 | `pendingRefinement` | object or `null` | `null`; mutually exclusive with `pendingPanel` |
+| `pendingThresholdCrossingConfirmation` | boolean | `false`; runtime-owned flag set only when an agent-scored answer crosses effective ambiguity from above threshold to ready and cleared by confirmed closure, a later above-threshold score, or a subsequent user-scored answer |
 | `autoAnswerStreak` | non-negative integer | `0` |
 | `autoResearchedRounds` | number array | `[]` |
 | `autoAnsweredRounds` | number array | `[]` |
@@ -104,7 +105,7 @@ Effects are returned in exact order. The host owns rendering, model calls, and f
 | `run_lateral_panel` | `round?`, `reason:'pre-answer'|'milestone'`, `personas:['analyst','critic']`, `architectLens:boolean`, milestone payload may include `priorBand`, `band` |
 | `score_answer` | `round` |
 | `report_progress` | `round?`, `reported`, `floor`, `effective`, `band`, `bandChanged`, `clamped`, `stallDetected`, `escalation`, `weakest`, `triggerSummary` |
-| `request_closure_audit` | `reason:'ready'|'hard-cap'|'early-exit'` |
+| `request_closure_audit` | `reason:'ready'|'hard-cap'|'early-exit'`, optional `thresholdCrossingConfirmation:true` |
 | `request_restate` | `summary` |
 | `write_spec` | no required payload |
 | `persist_spec` | `directory`, `slug`, `markdown`, `status` before CLI; CLI result is `path`, `sha256` |
@@ -118,7 +119,7 @@ Input: `{ interviewId, type:'greenfield'|'brownfield', idea, threshold?, thresho
 
 ### `confirm_topology`
 
-Input: `{ components:[{ id, name, description?, status:'active'|'deferred', deferralReason? }], confirmedAt }`. Required phase: `topology`. `confirmedAt` must be host-supplied ISO text for deterministic replay; the runtime must not mint time by itself. Requires 1..6 components, safe unique ids, and at least one active component. Deferred components should include a deferral reason. Sets topology status/confirmed timestamp. Effects: `open_round` for round 1 targeting the first active component and `goal`.
+Input: `{ components:[{ id, name, description?, status:'active'|'deferred', deferralReason? }], confirmedAt }`. Required phase: `topology`. `confirmedAt` must be host-supplied ISO text for deterministic replay; the runtime must not mint time by itself. Requires 1..6 components, safe unique ids, and at least one active component. Deferred components should include a deferral reason. Sets topology status/confirmed timestamp. Effects: `open_round` for round 1 targeting the first active component in sorted target-selection order and `goal`; `topology.lastTargetedComponentId` records that selected component.
 
 ### `open_round`
 
@@ -163,8 +164,10 @@ Rules:
 13. Stall: most recent three scored effective ambiguities have `max-min <= 0.05`.
 14. Escalation is `ontology` on stall or when `scoredRounds >= 8 && effective > 0.30`.
 15. Ontology snapshot: round 1 or zero entities gives `ratio:null`; stable uses same name case-insensitive; changed uses same type and field-name Jaccard strictly greater than `0.5`; new/removed otherwise; ratio is `round2((stable+changed)/totalCurrentEntities)`.
-16. Weakest next target: active component with highest per-component ambiguity, tie lexicographic id; within it, lowest required dimension, tie declared dimension order.
+16. Weakest next target: active component with highest per-component ambiguity. If exactly one active component has the highest ambiguity, select it. If multiple active components tie for the highest ambiguity, sort only those tied component ids ascending and select the id after `topology.lastTargetedComponentId`, wrapping to the first tied id when the last target is absent, last, or outside the tied set. Within the selected component, choose the lowest scored required dimension, tie declared dimension order.
 17. `establishedFacts` are appended to facts and factEvents with source round.
+
+Agent threshold crossing gate: when `answer.kind === 'agent'`, the prior effective ambiguity was above `threshold` (initially seeded as `1.0`), and the new effective ambiguity is `<= threshold`, set `pendingThresholdCrossingConfirmation:true` and include `thresholdCrossingConfirmation:true` on the `request_closure_audit` effect. User-kind answers never set this flag; a subsequent user-scored answer or any later score above threshold clears it.
 
 Effects: first `report_progress`, then exactly one continuation: hard cap requests closure audit; ready requests closure audit; band changes run the lateral panel; otherwise open the next round. On the 10th scored round that does not close, set `softWarningShown` and include `softWarning:true` in `open_round`.
 
@@ -182,7 +185,7 @@ Input: `{}`. Allowed only when `scoredRounds >= 3` or `softWarningShown` or `har
 
 ### `audit_closure`
 
-Input: `{ passed:boolean, overrideGap?, rationale? }`. Required phase: `closure`. Passing is rejected when unresolved disputed facts exist. Passing also requires `effective <= threshold` or `hardCapReached` or `earlyExitRequested`. If passed, set `closurePassed:true`, phase `restate`, effect `request_restate`. If failed, record `overrideGap` in `closureOverrides` when supplied, phase `round`, effect `open_round` for the current runtime-selected target.
+Input: `{ passed:boolean, overrideGap?, rationale?, userConfirmedCrossing? }`. Required phase: `closure`. Passing is rejected when unresolved disputed facts exist. Passing also requires `effective <= threshold` or `hardCapReached` or `earlyExitRequested`. While `pendingThresholdCrossingConfirmation:true`, passing is rejected unless `userConfirmedCrossing === true`; confirmed passing clears the flag. Failed audits do not require crossing confirmation and still use the override path. If passed, set `closurePassed:true`, phase `restate`, effect `request_restate`. If failed, record `overrideGap` in `closureOverrides` when supplied, phase `round`, effect `open_round` for the current runtime-selected target.
 
 ### `confirm_restate`
 
