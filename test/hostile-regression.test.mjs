@@ -186,3 +186,13 @@ test('DI-HOSTILE-012 rejects pendingRound.target tamper before submit_answer', (
 
   assertRejected(event(out.state, 'submit_answer', { round: 1, answer: { kind: 'user', text: 'hijacked', source: 'direct' } }), 'DI-HOSTILE-012');
 });
+
+
+test('DI-HOSTILE-013 rejects audit_closure with a tampered allDimensionsClear flag', () => {
+  let out = ok(event(null, 'initialize', { interviewId: 'repro-allclear-tamper', type: 'greenfield', idea: 'x' }));
+  out = ok(event(out.state, 'confirm_topology', { components: [{ id: 'c1', name: 'C1', status: 'active' }], confirmedAt }));
+  out.state.phase = 'closure';
+  out.state.allDimensionsClear = true;
+
+  assertRejected(event(out.state, 'audit_closure', { passed: true }), 'DI-HOSTILE-013');
+});

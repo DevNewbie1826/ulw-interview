@@ -200,3 +200,13 @@ export function applyAmbiguityFloorToEnvelope(value) {
   state.ambiguity_floor = breakdown;
   return { envelope: { ...envelope, state }, breakdown, clamped };
 }
+
+
+/** Derive the gajae all-dims->=0.9 fast-closure flag from topology clarity and facts. */
+export function deriveAllDimensionsClear(type, components, facts = []) {
+  const required = requiredDimensions(type);
+  const active = (components ?? []).filter((component) => component.status === 'active');
+  return active.length > 0
+    && active.every((component) => required.every((dimension) => typeof component.clarity?.[dimension] === 'number' && component.clarity[dimension] >= 0.9))
+    && unresolvedDisputeCount(facts) === 0;
+}

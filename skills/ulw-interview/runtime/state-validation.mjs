@@ -1,4 +1,5 @@
 import {
+  assertAllDimensionsClear,
   assertAutoAnswerStreak,
   assertDerivedMetrics,
   assertFactLedgerProjection,
@@ -186,5 +187,6 @@ export function assertRuntimeState(rawState) {
     throw new StateValidationError('write phases require closurePassed and restatementConfirmed');
   }
   assertDerivedMetrics(state);
+  assertAllDimensionsClear(state);
   return state;
 }

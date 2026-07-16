@@ -117,6 +117,7 @@ function newContractScoredState() {
     softWarningShown: false,
     hardCapReached: false,
     earlyExitRequested: false,
+    allDimensionsClear: true,
   };
 }
 

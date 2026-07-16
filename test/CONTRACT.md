@@ -212,6 +212,7 @@ Input: `{}`. Any phase before `written`. Clears pending work, phase `stopped`, e
 - Confirmed topology identity is immutable after `confirm_topology`; `topologyHash` is verified before and after every event, while clarity scores may still change through scoring.
 - Scored rounds are immutable except through the replacement path: stored `questionHash`, `answerHash`, and `scoringHash` must match the stored question/answer/scoring content, and scored component ids must match active topology ids.
 - Pending round `target` and `forcedUser` are derived from topology, rounds, and trailing auto-answer streak; caller mutation rejects before answer submission.
+- `allDimensionsClear` is derived, never caller-trusted: recomputed at every state mutation from topology clarity plus facts (every active component's required dimensions all `>=0.9` and no unresolved disputed facts), and a stored value that disagrees with the derivation rejects before the next event.
 - Facts are append-only; deletion or mutation without an event rejects. The `factEvents` ledger is replayed (`established`/`disputed`/`resolved`) and must reproduce the stored `facts` projection exactly.
 - `initialize` validates safe `interviewId`, enum `type`, non-empty `idea`, numeric `threshold` in `(0,1]`, non-empty string `thresholdSource`, and JSON `language` when present.
 - `record_score` ontology input rejects duplicate entity names case-insensitively and rejects entities with empty `name`, `type`, or `fields`; `relationships` may be an empty array.

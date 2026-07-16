@@ -1,4 +1,4 @@
-import { calculateAmbiguity } from './ambiguity-floor.mjs';
+import { calculateAmbiguity, deriveAllDimensionsClear } from './ambiguity-floor.mjs';
 import {
   StateValidationError,
   answerHash,
@@ -156,6 +156,11 @@ export function assertPendingRoundDerivedFields(state) {
   if (!sameTarget(state.pendingRound.target, expectedPendingTarget(state))) {
     throw new StateValidationError('pendingRound.target must match the runtime-selected target');
   }
+}
+
+export function assertAllDimensionsClear(state) {
+  const expected = deriveAllDimensionsClear(state.type, topologyComponents(state), state.facts);
+  if ((state.allDimensionsClear === true) !== expected) throw new StateValidationError('allDimensionsClear is inconsistent');
 }
 
 export function assertDerivedMetrics(state) {

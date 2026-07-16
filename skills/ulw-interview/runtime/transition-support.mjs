@@ -1,4 +1,4 @@
-import { calculateAmbiguity, componentAmbiguity } from './ambiguity-floor.mjs';
+import { calculateAmbiguity, componentAmbiguity, deriveAllDimensionsClear } from './ambiguity-floor.mjs';
 import { TransitionError, clone, requiredDimensions, topologyComponents } from './state.mjs';
 
 export function effect(type, payload = {}) {
@@ -110,7 +110,9 @@ export function withMetrics(state) {
     ambiguity: metrics.effective,
     reportedAmbiguity: metrics.reported,
     ambiguityFloor: metrics.floorBreakdown,
+    ambiguityFloor: metrics.floorBreakdown,
     band: metrics.band,
+    allDimensionsClear: deriveAllDimensionsClear(state.type, topologyComponents(state), state.facts),
   });
 }
 
