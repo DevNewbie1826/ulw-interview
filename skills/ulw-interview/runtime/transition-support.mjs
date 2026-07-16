@@ -149,5 +149,6 @@ export function progressEffect({ state, round = undefined, bandChanged = false, 
 export function closureAuditReason(state) {
   if (state.hardCapReached) return 'hard-cap';
   if (state.earlyExitRequested) return 'early-exit';
+  if (state.allDimensionsClear === true) return 'all-clear';
   return 'ready';
 }

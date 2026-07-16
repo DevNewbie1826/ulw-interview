@@ -32,6 +32,10 @@ function routeAfterMutation(previous, measured) {
     const closed = copyState(measured, { phase: 'closure' });
     return { state: closed, effects: [progress, effect('request_closure_audit', { reason: 'ready' })] };
   }
+  if (measured.allDimensionsClear === true) {
+    const closed = copyState(measured, { phase: 'closure' });
+    return { state: closed, effects: [progress, effect('request_closure_audit', { reason: 'all-clear' })] };
+  }
   return { state: measured, effects: [progress, openRoundEffect(measured)] };
 }
 

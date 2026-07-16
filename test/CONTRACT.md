@@ -174,11 +174,11 @@ Effects: first `report_progress`, then exactly one continuation: hard cap reques
 
 ### `record_fact`
 
-Input: `{ fact:{ id, statement, component?, dimension?, evidence? } }`. Required phase: `round` or `closure`; no pending work in round phase. Appends the fact and event, recomputes floor/effective, returns `report_progress` and the next routing effect.
+Input: `{ fact:{ id, statement, component?, dimension?, evidence? } }`. Required phase: `round` or `closure`; no pending work in round phase. Appends the fact and event, recomputes floor/effective, returns `report_progress` and the next routing effect: re-audit when already in `closure`, `request_closure_audit` with reason `ready` when effective <= threshold, `request_closure_audit` with reason `all-clear` when `allDimensionsClear` holds, otherwise `open_round`.
 
 ### `resolve_fact`
 
-Input: `{ factId, action:'reconfirm' }` or `{ factId, action:'supersede', newFact:{ id, statement, component?, dimension?, evidence? } }`. Reconfirm sets `disputed:false`. Supersede sets `old.superseded_by = newFact.id` and appends the new fact. Both append fact events, recompute floor/effective, and return `report_progress` plus routing.
+Input: `{ factId, action:'reconfirm' }` or `{ factId, action:'supersede', newFact:{ id, statement, component?, dimension?, evidence? } }`. Reconfirm sets `disputed:false`. Supersede sets `old.superseded_by = newFact.id` and appends the new fact. Both append fact events, recompute floor/effective, and return `report_progress` plus routing with the same precedence as `record_fact` (closure re-audit, `ready`, `all-clear`, otherwise `open_round`).
 
 ### `request_closure`
 

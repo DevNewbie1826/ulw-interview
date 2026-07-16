@@ -510,3 +510,32 @@ test('DI-CONTRACT-NEW-015 closes fast when every dimension is at least 0.9 even 
   assert.equal(closure.output.state.closurePassed, true);
   assert.equal(closure.output.state.phase, 'restate');
 });
+
+test('DI-CONTRACT-NEW-016 resolve_fact routes to all-clear closure after dispute resolution', () => {
+  const components = [{ id: 'c1', name: 'Component 1', status: 'active' }];
+  let output = confirmContractTopology(initializeContract('contract-resolve-allclear').state, components);
+  output = openContractRound(output.state, output.effects[0], 'q1');
+  output = submitContractAnswer(output.state, 1, { kind: 'user', text: 'One queue.', source: 'direct' });
+  output = scoreContractRound(output.state, 1, scoreAll(components, 0.8), {
+    establishedFacts: [{ id: 'F1', statement: 'One review queue exists.', component: 'c1', dimension: 'goal', evidence: 'round 1' }],
+  });
+  assert.equal(output.output.effects.at(-1).type, 'run_lateral_panel');
+  output = okContract(event(output.output.state, 'panel_completed', { findings: panelFindings() }));
+  assert.equal(output.effects.at(-1).type, 'open_round');
+
+  output = event(output.state, 'submit_answer', { round: 1, replacesRound: 1, answer: { kind: 'user', text: 'Two queues.', source: 'direct' } });
+  assert.equal(output.status, 0, output.stderr);
+  assert.equal(output.output.state.facts[0].disputed, true);
+
+  output = scoreContractRound(output.output.state, 1, scoreAll(components, 0.9));
+  assert.equal(output.status, 0, output.stderr);
+  assert.equal(output.output.state.allDimensionsClear, false);
+  assert.equal(output.output.effects.at(-1).type, 'open_round');
+
+  const resolved = event(output.output.state, 'resolve_fact', { factId: 'F1', action: 'reconfirm' });
+  assert.equal(resolved.status, 0, resolved.stderr);
+  assert.equal(resolved.output.state.allDimensionsClear, true);
+  assert.deepEqual(resolved.output.effects.map((effect) => effect.type), ['report_progress', 'request_closure_audit']);
+  assert.equal(resolved.output.effects[1].reason, 'all-clear');
+  assert.equal(resolved.output.state.phase, 'closure');
+});
