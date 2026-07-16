@@ -1,10 +1,19 @@
-import { calculateAmbiguity } from './ambiguity-floor.mjs';
+import {
+  assertAutoAnswerStreak,
+  assertDerivedMetrics,
+  assertFactLedgerProjection,
+  assertInitStamp,
+  assertPendingRoundDerivedFields,
+  assertScoredRoundIntegrity,
+  assertTopologyStamp,
+} from './state-integrity.mjs';
 import {
   MAX_STATE_BYTES,
   PHASES,
   StateValidationError,
   assertInterviewId,
   assertInterviewType,
+  assertNonEmptyString,
   assertObject,
   assertThreshold,
   byteLength,
@@ -114,55 +123,18 @@ function assertFacts(state) {
   }
 }
 
-function assertRounds(state, strictHashes) {
+function assertRounds(state) {
   const activeIds = new Set(topologyComponents(state).filter((component) => component.status === 'active').map((component) => component.id));
   for (const round of state.rounds) {
     assertObject(round, 'round');
     if (round.lifecycle !== 'scored') throw new StateValidationError('stored rounds must be scored');
     if (!Number.isInteger(round.round) || round.round < 1) throw new StateValidationError('round number is invalid');
-    if (strictHashes && round.roundKey !== deriveRoundKey(state.interviewId, round)) throw new StateValidationError('roundKey is inconsistent');
-    if (round.questionHash !== questionHash(round.question)) {
-      if (strictHashes) throw new StateValidationError('questionHash is inconsistent');
-      round.questionHash = questionHash(round.question);
-    }
+    if (round.questionHash !== questionHash(round.question)) throw new StateValidationError('questionHash is inconsistent');
     assertObject(round.componentScores, 'round.componentScores');
     for (const id of activeIds) {
       if (!Object.hasOwn(round.componentScores, id)) throw new StateValidationError('round componentScores must cover active components');
       validateScores(round.componentScores[id], state.type, `round ${round.round} componentScores.${id}`);
     }
-  }
-}
-
-function assertDerivedMetrics(state, strictDerived) {
-  if (state.phase === 'topology') {
-    if (state.ambiguity !== 1 || state.reportedAmbiguity !== 1 || state.band !== 'initial') {
-      throw new StateValidationError('topology ambiguity metrics are inconsistent');
-    }
-    return;
-  }
-  if (state.topologyStatus !== 'confirmed') return;
-  const metrics = calculateAmbiguity({
-    type: state.type,
-    components: topologyComponents(state),
-    facts: state.facts,
-    rounds: state.rounds,
-    threshold: state.threshold,
-    topologyStatus: state.topologyStatus,
-    autoAnsweredRounds: state.autoAnsweredRounds,
-  });
-  const mismatch = state.reportedAmbiguity !== metrics.reported
-    || state.ambiguity !== metrics.effective
-    || state.band !== metrics.band
-    || JSON.stringify(state.ambiguityFloor) !== JSON.stringify(metrics.floorBreakdown);
-  if (mismatch && !strictDerived) {
-    state.reportedAmbiguity = metrics.reported;
-    state.ambiguity = metrics.effective;
-    state.ambiguityFloor = metrics.floorBreakdown;
-    state.band = metrics.band;
-    return;
-  }
-  if (mismatch) {
-    throw new StateValidationError(`state ambiguity metrics are inconsistent: expected ${JSON.stringify(metrics.floorBreakdown)}/${metrics.reported}/${metrics.effective}/${metrics.band} got ${JSON.stringify(state.ambiguityFloor)}/${state.reportedAmbiguity}/${state.ambiguity}/${state.band}`);
   }
 }
 
@@ -179,7 +151,6 @@ function assertCounters(state) {
 }
 
 export function assertRuntimeState(rawState) {
-  const strictHashes = !Array.isArray(rawState?.topology);
   const state = canonicalizeState(rawState);
   assertStateSize(state);
   if (state.version !== 2) throw new StateValidationError('state.version is invalid');
@@ -187,18 +158,25 @@ export function assertRuntimeState(rawState) {
   assertInterviewId(state.interviewId);
   assertInterviewType(state.type);
   assertThreshold(state.threshold);
+  assertNonEmptyString(state.thresholdSource, 'state.thresholdSource');
   if (typeof state.idea !== 'string' || state.idea.trim() === '') throw new StateValidationError('state.idea is invalid');
   if (state.language !== undefined && !isJsonValue(state.language)) throw new StateValidationError('state.language is invalid');
+  assertInitStamp(state);
   assertArrays(state);
   assertTopology(state);
+  assertTopologyStamp(state);
   assertFacts(state);
-  assertRounds(state, strictHashes);
+  assertFactLedgerProjection(state);
+  assertRounds(state);
+  assertScoredRoundIntegrity(state);
   assertPendingState(state);
   assertPendingRound(state);
+  assertPendingRoundDerivedFields(state);
   assertCounters(state);
+  assertAutoAnswerStreak(state);
   if ((state.phase === 'write' || state.phase === 'written') && (!state.closurePassed || !state.restatementConfirmed)) {
     throw new StateValidationError('write phases require closurePassed and restatementConfirmed');
   }
-  assertDerivedMetrics(state, strictHashes);
+  assertDerivedMetrics(state);
   return state;
 }

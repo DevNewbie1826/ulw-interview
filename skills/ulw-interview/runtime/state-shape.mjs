@@ -11,8 +11,31 @@ import {
   assertSafeId,
   assertThreshold,
   clone,
+  hashContent,
   isObject,
 } from './state.mjs';
+
+export function initFingerprint(value) {
+  const payload = {
+    interviewId: value.interviewId,
+    type: value.type,
+    threshold: value.threshold,
+    thresholdSource: value.thresholdSource,
+    idea: value.idea,
+    ...(value.language === undefined ? {} : { language: value.language }),
+  };
+  return hashContent(payload);
+}
+
+export function topologyFingerprint(components) {
+  return hashContent(components.map((component) => ({
+    id: component.id,
+    name: component.name,
+    ...(component.description === undefined ? {} : { description: component.description }),
+    status: component.status,
+    ...(component.deferralReason === undefined ? {} : { deferralReason: component.deferralReason }),
+  })));
+}
 
 export function normalizeFact(value, defaults = {}) {
   assertObject(value, 'fact');
@@ -76,10 +99,11 @@ export function topologyComponents(state) {
 }
 
 export function topologyObject(state) {
+  if (Array.isArray(state.topology)) throw new StateValidationError('legacy topology array states must use the topology object form');
   if (isObject(state.topology) && Array.isArray(state.topology.components)) return state.topology;
   return {
     status: state.topologyStatus ?? 'pending',
-    components: Array.isArray(state.topology) ? normalizeTopologyComponents(state.topology) : [],
+    components: [],
     deferrals: [],
     confirmedAt: null,
     lastTargetedComponentId: null,
@@ -127,15 +151,21 @@ export function canonicalizeState(rawState) {
 export function createInitialState(input) {
   assertObject(input, 'initialize input');
   const facts = normalizeEstablishedFacts(input.facts ?? input.establishedFacts ?? []);
-  return {
-    version: 2,
-    phase: 'topology',
+  const threshold = assertThreshold(input.threshold ?? DEFAULT_THRESHOLD);
+  const thresholdSource = assertNonEmptyString(input.thresholdSource ?? DEFAULT_THRESHOLD_SOURCE, 'thresholdSource');
+  const base = {
     interviewId: assertInterviewId(input.interviewId),
     type: assertInterviewType(input.type),
     idea: assertNonEmptyString(input.idea, 'idea'),
     ...(input.language === undefined ? {} : { language: assertJsonValue(input.language, 'language') }),
-    threshold: assertThreshold(input.threshold ?? DEFAULT_THRESHOLD),
-    thresholdSource: input.thresholdSource ?? DEFAULT_THRESHOLD_SOURCE,
+    threshold,
+    thresholdSource,
+  };
+  return {
+    version: 2,
+    phase: 'topology',
+    ...base,
+    initHash: initFingerprint(base),
     ambiguity: 1,
     reportedAmbiguity: 1,
     ambiguityFloor: { floor: 0, disputedFactCount: 0, unscoredActiveComponentCount: 0, autoAnswerRatio: 0 },
@@ -145,6 +175,7 @@ export function createInitialState(input) {
     factEvents: facts.map((fact) => ({ type: 'established', factId: fact.id, fact: clone(fact), ...(fact.round === undefined ? {} : { round: fact.round }) })),
     topologyStatus: 'pending',
     topology: { status: 'pending', components: [], deferrals: [], confirmedAt: null, lastTargetedComponentId: null },
+    topologyHash: null,
     pendingRound: null,
     pendingPanel: null,
     pendingRefinement: null,

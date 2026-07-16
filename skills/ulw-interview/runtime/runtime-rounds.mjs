@@ -10,7 +10,9 @@ import {
   isJsonValue,
   normalizeTopologyComponents,
   questionHash,
+  topologyFingerprint,
 } from './state.mjs';
+import { assertPanelFindings, normalizeAnswer } from './runtime-round-validation.mjs';
 import { assertPhase, copyState, effect, nextRoundNumber, nextTarget, withMetrics } from './transition-support.mjs';
 
 function assertNoPending(state) {
@@ -23,24 +25,10 @@ function sameTarget(left, right) {
   return left?.componentId === right?.componentId && left?.dimension === right?.dimension;
 }
 
-function normalizeAnswer(rawAnswer) {
-  assertObject(rawAnswer, 'answer');
-  if (rawAnswer.kind !== 'user' && rawAnswer.kind !== 'agent') throw new TransitionError('answer.kind must be user or agent');
-  assertNonEmptyString(rawAnswer.text, 'answer.text');
-  if (rawAnswer.source !== undefined && !['direct', 'refined', 'cited-confirmation', 'auto-research-accepted', 'agent'].includes(rawAnswer.source)) {
-    throw new TransitionError('answer.source is invalid');
+function assertPendingTarget(state) {
+  if (!sameTarget(state.pendingRound?.target, nextTarget(state))) {
+    throw new TransitionError('pendingRound target must match the runtime-selected target');
   }
-  if (rawAnswer.confidence !== undefined && !['high', 'medium', 'low'].includes(rawAnswer.confidence)) {
-    throw new TransitionError('answer.confidence is invalid');
-  }
-  if (rawAnswer.uncertainty !== undefined && rawAnswer.uncertainty !== null
-    && (typeof rawAnswer.uncertainty !== 'number' || !Number.isFinite(rawAnswer.uncertainty) || rawAnswer.uncertainty < 0 || rawAnswer.uncertainty > 1)) {
-    throw new TransitionError('answer.uncertainty is invalid');
-  }
-  if (rawAnswer.autoResearchUsed !== undefined && typeof rawAnswer.autoResearchUsed !== 'boolean') {
-    throw new TransitionError('answer.autoResearchUsed is invalid');
-  }
-  return clone(rawAnswer);
 }
 
 function applyStreak(state, round, answer) {
@@ -56,24 +44,6 @@ function applyStreak(state, round, answer) {
 
 function answeredPendingRound(state, answer) {
   return { ...state.pendingRound, answer };
-}
-
-function assertPanelFindings(findings) {
-  if (!Array.isArray(findings) || findings.length !== PANEL_PERSONAS.length) {
-    throw new TransitionError('panel findings must match analyst/critic order');
-  }
-  for (const [index, finding] of findings.entries()) {
-    assertObject(finding, `panel finding ${index}`);
-    if (finding.persona !== PANEL_PERSONAS[index]) throw new TransitionError('panel findings must match analyst/critic order');
-    assertNonEmptyString(finding.finding, `panel finding ${index}.finding`);
-    if (!Array.isArray(finding.rationale) || finding.rationale.some((entry) => typeof entry !== 'string' || entry.trim() === '')) {
-      throw new TransitionError('panel finding rationale must contain strings');
-    }
-    if (!Array.isArray(finding.suggested_options) || finding.suggested_options.some((entry) => typeof entry !== 'string' || entry.trim() === '')) {
-      throw new TransitionError('panel finding suggested_options must contain strings');
-    }
-    if (!['high', 'medium', 'low'].includes(finding.confidence)) throw new TransitionError('panel finding confidence is invalid');
-  }
 }
 
 export function initialize(input) {
@@ -100,7 +70,7 @@ export function confirmTopology(state, input) {
     confirmedAt: input.confirmedAt,
     lastTargetedComponentId: null,
   };
-  const measured = withMetrics(copyState(state, { phase: 'round', topologyStatus: 'confirmed', topology }));
+  const measured = withMetrics(copyState(state, { phase: 'round', topologyStatus: 'confirmed', topology, topologyHash: topologyFingerprint(components) }));
   return { state: measured, effects: [effect('open_round', { round: 1, target: nextTarget(measured) })] };
 }
 
@@ -142,6 +112,13 @@ export function openRound(state, input) {
 }
 
 function submitReplacement(state, input, answer) {
+  if (state.pendingRound) {
+    if (state.pendingRound.answer !== undefined && (state.pendingRound.round === input.replacesRound || state.pendingRound.replacesRound === input.replacesRound)) {
+      throw new TransitionError('submit_answer already recorded for this replacement round');
+    }
+    throw new TransitionError('replacesRound requires no pending round');
+  }
+  if (!Number.isInteger(input.replacesRound) || input.replacesRound < 1) throw new TransitionError('replacesRound must identify a scored round');
   const prior = state.rounds.find((round) => round.round === input.replacesRound && round.lifecycle === 'scored');
   if (!prior) throw new TransitionError('replacesRound must identify a scored round');
   const disputed = disputeFactsFromRetractedRound(state.facts, input.replacesRound);
@@ -182,6 +159,7 @@ export function submitAnswer(state, input) {
   if (!state.pendingRound || state.pendingPanel || state.pendingRefinement) throw new TransitionError('submit_answer requires one open round');
   if (input.round !== state.pendingRound.round) throw new TransitionError('submit_answer round must match pendingRound');
   if (state.pendingRound.answer !== undefined) throw new TransitionError('submit_answer already recorded for this round');
+  assertPendingTarget(state);
   if (state.pendingRound.forcedUser && answer.kind === 'agent') throw new TransitionError('agent answers are rejected on forced-user rounds');
   const streak = applyStreak(state, input.round, answer);
   const nextRound = answeredPendingRound(state, answer);

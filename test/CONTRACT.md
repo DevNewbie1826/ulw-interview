@@ -42,6 +42,7 @@ All state is JSON-serializable and validated before every non-`initialize` event
 | `language` | optional JSON value | input when present |
 | `threshold` | number `(0,1]` | input or `0.05` |
 | `thresholdSource` | string | input or `'default'` |
+| `initHash` | sha256 string | canonical hash of initialize-locked fields: `interviewId`, `type`, `threshold`, `thresholdSource`, `idea`, and `language` when present |
 | `ambiguity` | number `[0,1]` | effective ambiguity, initially `1.0` |
 | `reportedAmbiguity` | number `[0,1]` | scorer/math value before floor, initially `1.0` |
 | `ambiguityFloor` | object | `{ floor:0, disputedFactCount:0, unscoredActiveComponentCount:0, autoAnswerRatio:0 }` |
@@ -51,6 +52,7 @@ All state is JSON-serializable and validated before every non-`initialize` event
 | `factEvents` | fact event array | one `established` event per input fact, otherwise `[]` |
 | `topologyStatus` | `'pending'|'confirmed'` | `'pending'` |
 | `topology` | object | `{ status:'pending', components:[], deferrals:[], confirmedAt:null, lastTargetedComponentId:null }` |
+| `topologyHash` | sha256 string or `null` | `null` until confirmation, then canonical hash of locked topology component ids/names/status/deferrals; excludes mutable clarity scores |
 | `pendingRound` | object or `null` | `null`; mutually exclusive with `pendingPanel` and `pendingRefinement` |
 | `pendingPanel` | object or `null` | `null`; mutually exclusive with `pendingRound` except when blocking its answer/continuation |
 | `pendingRefinement` | object or `null` | `null`; mutually exclusive with `pendingPanel` |
@@ -202,7 +204,14 @@ Input: `{}`. Any phase before `written`. Clears pending work, phase `stopped`, e
 - Caller-mutated derived fields (`ambiguity`, `reportedAmbiguity`, `ambiguityFloor`, `band`, streaks, selected targets, hashes) inconsistent with replay reject.
 - Exactly one pending thing may exist: round XOR panel XOR refinement. A panel may block the continuation of a round, but scoring is still rejected while it is pending.
 - State serialized size must be <=900000 bytes; CLI stdin <=1048576 bytes.
-- Facts are append-only; deletion or mutation without an event rejects.
+- Initialize-locked fields (`interviewId`, `type`, `threshold`, `thresholdSource`, `idea`, `language`) are immutable after `initialize`; their canonical `initHash` is verified before and after every event.
+- Confirmed topology identity is immutable after `confirm_topology`; `topologyHash` is verified before and after every event, while clarity scores may still change through scoring.
+- Scored rounds are immutable except through the replacement path: stored `questionHash`, `answerHash`, and `scoringHash` must match the stored question/answer/scoring content, and scored component ids must match active topology ids.
+- Pending round `target` and `forcedUser` are derived from topology, rounds, and trailing auto-answer streak; caller mutation rejects before answer submission.
+- Facts are append-only; deletion or mutation without an event rejects. The `factEvents` ledger is replayed (`established`/`disputed`/`resolved`) and must reproduce the stored `facts` projection exactly.
+- `initialize` validates safe `interviewId`, enum `type`, non-empty `idea`, numeric `threshold` in `(0,1]`, non-empty string `thresholdSource`, and JSON `language` when present.
+- `record_score` ontology input rejects duplicate entity names case-insensitively and rejects entities with empty `name`, `type`, or `fields`; `relationships` may be an empty array.
+- Legacy topology-array states reject; runtime states must use the canonical topology object form.
 - Same state plus same event returns the same result, except externally supplied `confirmedAt` is treated as deterministic input.
 
 ## Prompt and docs contract

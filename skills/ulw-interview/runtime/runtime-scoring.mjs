@@ -1,6 +1,6 @@
 import { calculateAmbiguity } from './ambiguity-floor.mjs';
 import { appendEstablishedFacts, disputeFacts } from './fact-ledger.mjs';
-import { normalizeComponentScores, normalizeTriggers, ontologySnapshot, panelPersonas, validateActiveTriggers } from './round-recorder.mjs';
+import { normalizeComponentScores, normalizeOntology, normalizeTriggers, ontologySnapshot, panelPersonas, validateActiveTriggers } from './round-recorder.mjs';
 import {
   MAX_ROUNDS,
   SOFT_WARNING_ROUND,
@@ -144,7 +144,7 @@ export function recordScore(state, input) {
   const established = appendEstablishedFacts({ ...state, facts: disputed.facts, factEvents: disputed.factEvents }, input.establishedFacts ?? [], state.pendingRound.round);
   const components = updateTopologyScores(state, componentScores);
   const metricsBeforeRound = computeMetrics(state, components, established.facts, state.rounds);
-  const ontology = input.ontology ?? null;
+  const ontology = normalizeOntology(input.ontology);
   const snapshot = ontology === null ? null : ontologySnapshot(state.pendingRound.round, ontology, state.ontologySnapshots);
   const provisionalRound = buildRoundRecord({ state, input, componentScores, triggers, metrics: metricsBeforeRound, ontology });
   if (snapshot !== null) provisionalRound.ontologySnapshot = snapshot;

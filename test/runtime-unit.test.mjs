@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  ambiguityFloor,
-  calculateAmbiguity,
-  clamp,
-  classifyBand,
-} from '../skills/ulw-interview/runtime/ambiguity-floor.mjs';
+  answerHash,
+  deriveRoundKey,
+  questionHash,
+  scoringHash,
+} from '../skills/ulw-interview/runtime/state.mjs';
+import { ambiguityFloor, calculateAmbiguity, clamp, classifyBand } from '../skills/ulw-interview/runtime/ambiguity-floor.mjs';
 import { reduce } from '../skills/ulw-interview/runtime/runtime.mjs';
 
 function safeFloor(state) {
@@ -33,10 +34,20 @@ function initialize(interviewId = 'unit-contract') {
 }
 
 function newContractScoredState() {
+  const interviewId = 'new-contract-state';
+  const round = 1;
+  const questionId = 'q1';
+  const question = 'What is the review goal?';
+  const target = { componentId: 'review', dimension: 'goal' };
+  const answer = { kind: 'user', text: 'Review one queue.', source: 'direct' };
+  const componentScores = { review: { goal: 0.94, constraints: 0.94, criteria: 0.94 } };
+  const weakest = target;
+  const triggers = [];
+  const ontology = null;
   return {
     version: 2,
     phase: 'round',
-    interviewId: 'new-contract-state',
+    interviewId,
     type: 'greenfield',
     idea: 'Clarify a review workflow.',
     threshold: 0.05,
@@ -49,29 +60,46 @@ function newContractScoredState() {
       unscoredActiveComponentCount: 0,
       autoAnswerRatio: 0,
     },
-    band: 'ready',
+    band: 'refined',
     rounds: [{
-      round: 1,
-      roundKey: 'new-contract-state::r:1::q:q1',
-      questionId: 'q1',
-      question: 'What is the review goal?',
-      questionHash: 'fixture-hash',
-      target: { componentId: 'review', dimension: 'goal' },
-      answer: { kind: 'user', text: 'Review one queue.' },
+      round,
+      roundKey: deriveRoundKey(interviewId, { round, questionId }),
+      questionId,
+      question,
+      questionHash: questionHash(question),
+      target,
+      answer,
+      answerHash: answerHash(answer),
       lifecycle: 'scored',
-      componentScores: { review: { goal: 0.94, constraints: 0.94, criteria: 0.94 } },
-      reported_ambiguity: 0.06,
+      componentScores,
+      reportedAmbiguity: 0.06,
+      ambiguityFloor: {
+        floor: 0,
+        disputedFactCount: 0,
+        unscoredActiveComponentCount: 0,
+        autoAnswerRatio: 0,
+      },
       ambiguity: 0.06,
+      band: 'refined',
+      triggers,
+      weakest,
+      scoringHash: scoringHash({ componentScores, triggers, ontology, weakest }),
     }],
     facts: [{ id: 'F1', statement: 'One review queue exists.', round: 1, disputed: false }],
-    factEvents: [{ type: 'established', factId: 'F1', round: 1 }],
+    factEvents: [{ type: 'established', factId: 'F1', fact: { id: 'F1', statement: 'One review queue exists.', round: 1, disputed: false }, round: 1 }],
     topologyStatus: 'confirmed',
-    topology: [{
-      id: 'review',
-      name: 'Review',
-      status: 'active',
-      clarity: { goal: 0.94, constraints: 0.94, criteria: 0.94 },
-    }],
+    topology: {
+      status: 'confirmed',
+      components: [{
+        id: 'review',
+        name: 'Review',
+        status: 'active',
+        clarity: { goal: 0.94, constraints: 0.94, criteria: 0.94 },
+      }],
+      deferrals: [],
+      confirmedAt: '2026-07-17T00:00:00.000Z',
+      lastTargetedComponentId: 'review',
+    },
     pendingRound: null,
     pendingPanel: null,
     pendingRefinement: null,
@@ -228,4 +256,16 @@ test('DI-UNIT-NEW-008 clamp mirrors gajae clampReportedAmbiguity without roundin
   assert.deepEqual(clamp(0.333, 0), { effective: 0.333, clamped: false });
   assert.deepEqual(clamp(0.333, 0.5), { effective: 0.5, clamped: true });
   assert.deepEqual(clamp(0.4567, 0.2), { effective: 0.4567, clamped: false });
+});
+
+test('DI-UNIT-NEW-009 rejects a legacy topology-array state outright on the next event', () => {
+  const legacy = newContractScoredState();
+  legacy.topology = legacy.topology.components;
+
+  const rejected = safeReduce(legacy, {
+    type: 'open_round',
+    input: { round: 2, questionId: 'q2', question: 'What changed?', target: legacy.rounds[0].weakest },
+  });
+
+  assert.match(rejected.error ?? '', /topology.*object|legacy topology/i, 'legacy topology-array state must reject before the next event');
 });

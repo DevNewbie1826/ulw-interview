@@ -178,10 +178,12 @@ export function scoreDetails(value, type, label = 'scores') {
 export {
   canonicalizeState,
   createInitialState,
+  initFingerprint,
   normalizeEstablishedFact,
   normalizeEstablishedFacts,
   normalizeFact,
   normalizeTopologyComponents,
   topologyComponents,
+  topologyFingerprint,
   topologyObject,
 } from './state-shape.mjs';

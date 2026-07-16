@@ -99,6 +99,30 @@ function fieldSet(entity) {
   return new Set((Array.isArray(entity.fields) ? entity.fields : []).map((field) => lower(field)));
 }
 
+function assertStringArray(value, label, { allowEmpty }) {
+  if (!Array.isArray(value) || (!allowEmpty && value.length === 0)) throw new TransitionError(`${label} must be an array of non-empty strings`);
+  if (value.some((entry) => typeof entry !== 'string' || entry.trim() === '')) {
+    throw new TransitionError(`${label} must be an array of non-empty strings`);
+  }
+}
+
+export function normalizeOntology(ontology) {
+  if (ontology === undefined || ontology === null) return null;
+  if (!Array.isArray(ontology)) throw new TransitionError('ontology must be an array');
+  const seen = new Set();
+  return ontology.map((rawEntity, index) => {
+    assertObject(rawEntity, `ontology entity ${index}`);
+    if (typeof rawEntity.name !== 'string' || rawEntity.name.trim() === '') throw new TransitionError('ontology entity name must be a non-empty string');
+    if (typeof rawEntity.type !== 'string' || rawEntity.type.trim() === '') throw new TransitionError('ontology entity type must be a non-empty string');
+    const key = lower(rawEntity.name);
+    if (seen.has(key)) throw new TransitionError('ontology entity names must be unique case-insensitively');
+    seen.add(key);
+    assertStringArray(rawEntity.fields, 'ontology entity fields', { allowEmpty: false });
+    if (rawEntity.relationships !== undefined) assertStringArray(rawEntity.relationships, 'ontology entity relationships', { allowEmpty: true });
+    return clone(rawEntity);
+  });
+}
+
 function jaccard(left, right) {
   const union = new Set([...left, ...right]);
   if (union.size === 0) return 0;
