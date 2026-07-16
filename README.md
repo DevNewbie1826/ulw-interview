@@ -137,6 +137,7 @@ The suite uses `node:test` and includes unit scoring fixtures, contract-level ru
 - ask-tool deepInterview.* metadata: omitted because the skill uses the Node JSON protocol, not ask-tool metadata.
 - ralplan/ultragoal/team handoffs: omitted because the runtime is single-path and does not expose those handoff modes.
 - codebase_context state field: omitted because host context is folded into the scoring prompt instead of stored in state.
+- architect_failures counter: mapped, not omitted — gajae's architect spawn-failure counter is tracked as `lateralPanelFailures` for panel dispatch failures; auto-research and auto-answer dispatch failures are host-visible and never reach the runtime, so they are not runtime-tracked by design.
 
 ## License
 

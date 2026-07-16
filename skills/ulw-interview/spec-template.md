@@ -12,6 +12,7 @@
 - Auto-Answered Rounds: {auto_answered_rounds}
 - Refined Rounds: {refined_rounds}
 - Lateral Reviews: {lateral_review_count}
+- Lateral Panel Failures: {lateral_panel_failures}
 - Closure Overrides: {closure_overrides}
 - Restated Goal: {restated_goal}
 
