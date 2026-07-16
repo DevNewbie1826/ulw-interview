@@ -23,6 +23,9 @@ export const UlwInterviewPlugin = async () => {
     config: async (config) => {
       config.skills = config.skills ?? {};
       config.skills.paths = config.skills.paths ?? [];
+      if (!Array.isArray(config.skills.paths)) {
+        throw new TypeError('config.skills.paths must be an array');
+      }
       if (!config.skills.paths.includes(skillsDir)) {
         config.skills.paths.push(skillsDir);
       }
