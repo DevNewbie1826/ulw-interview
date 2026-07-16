@@ -290,6 +290,7 @@ test('public READMEs document every hardened runtime boundary', () => {
   assert.match(runtimeReadme, /MAX_RAW_TRANSITION_BYTES[\s\S]*2101248/);
   assert.match(runtimeReadme, /MAX_VALIDATOR_INPUT_BYTES[\s\S]*1048576/);
   assert.match(runtimeReadme, /MAX_REGISTRY_CONTEXT_BYTES[\s\S]*262144/);
+  assert.match(runtimeReadme, /MAX_HISTORY_CONTEXT_BYTES[\s\S]*262144/);
   assert.match(runtimeReadme, /MAX_INPUT_BYTES[\s\S]*1048576/);
   assert.match(runtimeReadme, /MAX_VALIDATION_ERRORS[\s\S]*64/);
   assert.match(runtimeReadme, /MAX_DIAGNOSTICS[\s\S]*64/);
@@ -345,6 +346,7 @@ test('transition lifecycle is the sole instruction authority', () => {
   );
   assert.match(pipeline, /replace[^\n]*state[^\n]*result\.state/i);
   assert.match(pipeline, /semanticCoverageGaps/);
+  assert.match(pipeline, /--history-context/);
 
   const handling = section(skill, '### Reducer action handling', '## Phase 0:');
   const documentedActions = [...handling.matchAll(/^\| `([a-z_]+)` \|/gm)]
@@ -368,6 +370,30 @@ test('transition lifecycle is the sole instruction authority', () => {
   assert.doesNotMatch(scopedDocs, /last 3[^\n]*0\.05|goal\s*[×*]\s*0\.[0-9]+/i);
   assert.match(skill, /state[^\n]*opaque trusted tool output[^\n]*exact `result\.state`/i);
   assert.match(skill, /never[^\n]*user-supplied replacement state/i);
+});
+
+test('primary caller cannot replace or bypass Oracle semantic scoring', () => {
+  const authority = contractJson(skill, 'scoring-authority');
+  assert.deepEqual(authority, {
+    tool: 'task',
+    subagent_type: 'oracle',
+    load_skills: [],
+    run_in_background: false,
+    prompt_source: 'references/prompts/oracle-scoring.md',
+    history_context: 'required-current-component-snapshot',
+    semantic_output_fields: [
+      'scores',
+      'weakest_dimension',
+      'triggers',
+      'justification',
+      'gap',
+      'coverage',
+      'acceptance_evidence',
+    ],
+    primary_caller_mode: 'opaque-relay',
+    on_validation_failure: 'retry-once-then-canonical-fallback',
+    on_oracle_unavailable: 'stop',
+  });
 });
 
 test('validation fallback instructions define the canonical side-effect-free event', () => {

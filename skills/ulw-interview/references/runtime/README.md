@@ -60,7 +60,7 @@ Panel ownership is split at a machine boundary: the scorer produces a non-ready 
 
 ## Oracle Validation And Semantic Coverage
 
-Invoke `validate.mjs` with `--expected-type=greenfield` or `--expected-type=brownfield`. A valid result has `ok:true`, normalized scores, normalized coverage, and normalized acceptance evidence. Invalid Oracle data returns `ok:false` with errors and a retry hint on stdout so the caller can retry without treating it as a runtime crash.
+Invoke `validate.mjs` with `--expected-type=greenfield` or `--expected-type=brownfield`. For every baseline and round call, also pass the canonical base64url-encoded pre-Oracle component snapshot through `--history-context`; baseline additionally passes ID ownership through `--registry-context`. A valid result has `ok:true`, normalized scores, normalized coverage, and normalized acceptance evidence. Invalid Oracle data returns `ok:false` with errors and a retry hint on stdout so the caller can retry without treating it as a runtime crash.
 
 Greenfield validation accepts exactly `goal`, `constraints`, and `criteria` and rejects `context`; brownfield requires exactly all four dimensions. Validated Oracle triggers are `{dim,type}` records. Before scorer invocation, the instruction layer must enrich every trigger with `component: askedTarget.component`; the scorer then records the fired dimensions and the reducer validates the committed scorer output.
 
@@ -70,7 +70,7 @@ Each component coverage snapshot has exactly these categories on one object: `ou
 
 Acceptance evidence is append-only. Every currently active M/N/I item must have acceptance evidence with a user-confirmed pass condition before semantic closure, while evidence may continue to reference superseded history. Structural validation accepts a snapshot with a missing active link so transition can return that exact coverage target; malformed, dangling, or duplicate links are rejected.
 
-Within an interview, item IDs and evidence IDs are globally unique, immutable, and never reused or moved. `transition.mjs` enforces cross-component history, round provenance, snapshot carry-forward, and mutation of only the component selected by the prior target.
+Within an interview, item IDs and evidence IDs are globally unique, immutable, and never reused or moved. `validate.mjs` compares the trusted history context before scoring and rejects deletion, reorder, prior text or `source_round` changes, invalid state transitions, and acceptance-evidence rewrites. `transition.mjs` independently enforces the same history contract at commit, plus cross-component history, round provenance, snapshot carry-forward, and mutation of only the component selected by the prior target.
 
 Transcript compression is instruction-layer work. The append-only immutable full transcript is the only source for selection, token counting, cache keys, and final artifact rendering. The latest two complete rounds are always verbatim and ineligible. From older rounds, select the oldest half rounded up, and compress only if that selected prefix is nonempty and strictly exceeds 4000 tokens. The one-interview cache stores only summaries validated for the exact prefix bytes, immutable registry, ownership map, and compression prompt version; retries and unchanged prefixes reuse them. A working transcript is ephemeral and never feeds later selection. Invalid or fallback output is never cached. Valid key `i` reused `k_i` times saves `k_i - 1` calls, for total savings `sum(k_i - 1)`.
 
@@ -110,6 +110,7 @@ These runtime values are documented only here. Instruction and prompt prose refe
 | `MAX_RAW_TRANSITION_BYTES` | `2101248` | Maximum transition CLI stdin bytes before parsing. |
 | `MAX_VALIDATOR_INPUT_BYTES` | `1048576` | Maximum validator stdin bytes before parsing. |
 | `MAX_REGISTRY_CONTEXT_BYTES` | `262144` | Maximum decoded baseline registry-context bytes before parsing. |
+| `MAX_HISTORY_CONTEXT_BYTES` | `262144` | Maximum decoded pre-Oracle component history context before parsing. |
 | `MAX_INPUT_BYTES` | `1048576` | Maximum scorer, refine-gate, and FactsLedger stdin bytes before parsing. |
 | `MAX_VALIDATION_ERRORS` | `64` | Maximum validator error records, including the omission marker. |
 | `MAX_DIAGNOSTICS` | `64` | Maximum scorer diagnostics, including the omission marker. |

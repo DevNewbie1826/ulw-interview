@@ -20,7 +20,7 @@ Immutable full interview ID registry: {global_id_registry}
 All component ID ownership: {all_component_id_ownership}
 Current committed interview round: {source_round}
 
-Treat the registry and ownership map as immutable. During baseline, return only the complete snapshot for `currentBaselineComponent`; during a scored round, only the asked component snapshot may change. Never edit, move, or regenerate an ID owned by any component.
+Treat the registry and ownership map as immutable. During baseline, return only the complete snapshot for `currentBaselineComponent`; during a scored round, only the asked component snapshot may change. Copy every prior item and acceptance-evidence record byte-for-byte, including its full text and original `source_round`; only `state` may change from `active` to `superseded`. Never restamp prior records with the current round, abbreviate their text, or edit, move, or regenerate an owned ID.
 
 If one free-text answer also volunteers related must-have, must-not, out-of-scope, invariant, preference, or acceptance-evidence details, fast-answer capture may record those direct confirmations only for the same component. The returned asked target still owns scoring. This creates no second target and no second question, and every sibling component remains byte-for-byte unchanged.
 
@@ -75,7 +75,7 @@ Each item is exactly
 {id,text,source:"user",source_round,state:"active|superseded",supersedes}.
 Use stable interview-global IDs: O... outcome, M... must-have, N... must-not,
 X... out-of-scope, I... invariant, and P... preference. Preserve all prior items
-in order. Never edit, delete, move, reuse, or reactivate an ID. A replacement appends
+byte-for-byte in order, including `text` and `source_round`. Never edit, delete, move, reuse, or reactivate an ID. A replacement appends
 a higher ID, sets supersedes to the older ID, and marks only that older item superseded.
 
 Each acceptance_evidence entry is exactly

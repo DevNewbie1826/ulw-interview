@@ -89,22 +89,55 @@ Internal state, runtime calls, scorer fields, and trigger names are **never show
 
 ## Runtime Contract (authoritative)
 
-`transition.mjs` is the **sole authoritative lifecycle contract**. It owns legal event order, policy precedence, state commits, and the next action. `validate.mjs`, `refineGate.mjs`, and `scorer.mjs` own their machine contracts and numerical decisions. The LLM NEVER computes ambiguity, semantic completeness, or a next lifecycle step by hand. If prose and runtime disagree, the runtime is correct.
+`transition.mjs` is the **sole authoritative lifecycle contract**. It owns legal event order, policy precedence, state commits, and the next action. `validate.mjs`, `refineGate.mjs`, and `scorer.mjs` own their machine contracts and numerical decisions. The primary caller NEVER authors semantic score fields, computes ambiguity, decides semantic completeness, or chooses a next lifecycle step by hand. If prose and runtime disagree, the runtime is correct.
 
 **Path resolution (critical):** The runtime scripts live in the `references/runtime/` directory **next to this SKILL.md file**. The skill system exposes this file's location. Resolve `RUNTIME_DIR` as the directory containing SKILL.md + `/references/runtime/`. Invoke scripts with absolute paths under `RUNTIME_DIR`. Do NOT use bare `references/runtime/` — that only works if cwd is the skill directory.
 
 For every lifecycle event, send `{state,event}` to `node "$RUNTIME_DIR/transition.mjs"`. Treat its successful `{state,action,semanticCoverageGaps}` response as one indivisible commit: replace the caller's state with `result.state`, retain `result.semanticCoverageGaps` for review, and execute only `result.action`. Never patch individual prior-state fields, skip an action, or infer a competing action from scorer output.
 
-The LLM still owns meaning and language: question wording, topology proposals, facts-versus-decisions routing, semantic coverage judgment, FactsLedger effects, panel interpretation, closure materiality, and spec synthesis. Those judgments become reducer events; they never become runtime heuristics.
+The primary caller owns question wording, topology proposals, facts-versus-decisions routing, FactsLedger effects, panel interpretation, and spec synthesis. The Oracle subagent exclusively owns baseline and round semantic score fields and closure materiality judgment. Those judgments become reducer events; they never become runtime heuristics.
 
 Every Oracle invocation, including baseline, round, panel, closure, and compression, receives the immutable full interview ID registry and all component ID ownership as read-only context.
+
+### Scoring authority boundary (blocking)
+
+The following routing and authority envelope is mandatory for every baseline and round score. It is a control contract, not an example.
+
+<!-- scoring-authority:start -->
+```json
+{
+  "tool": "task",
+  "subagent_type": "oracle",
+  "load_skills": [],
+  "run_in_background": false,
+  "prompt_source": "references/prompts/oracle-scoring.md",
+  "history_context": "required-current-component-snapshot",
+  "semantic_output_fields": [
+    "scores",
+    "weakest_dimension",
+    "triggers",
+    "justification",
+    "gap",
+    "coverage",
+    "acceptance_evidence"
+  ],
+  "primary_caller_mode": "opaque-relay",
+  "on_validation_failure": "retry-once-then-canonical-fallback",
+  "on_oracle_unavailable": "stop"
+}
+```
+<!-- scoring-authority:end -->
+
+Only the OpenCode `task` tool call with `subagent_type="oracle"` may author the listed semantic output fields. The primary caller only relays the raw Oracle response into `validate.mjs`; it must never create, edit, repair, reinterpret, or substitute any listed field. This remains true when an Oracle score looks implausible, regresses sharply, or conflicts with the caller's own judgment. Never replace it with a “reasonable” score, never skip the Oracle, and never route scoring to another agent type or category.
+
+On validation failure, follow the exact retry and Canonical validation fallback path below. The fallback's fixed values are runtime-contract constants, not primary-caller semantic judgment. If the Oracle task route is unavailable, fails to return a response, or cannot use `references/prompts/oracle-scoring.md`, stop the scoring flow and report the blocker; do not score, substitute another agent, or enter fallback. `scorer.mjs` may perform deterministic arithmetic on validated Oracle values or fixed fallback values, but it never grants semantic authorship to its caller.
 
 ### Round answer pipeline
 
 When the current action is `ask_target`, preserve its `askedTarget` before asking exactly one question. After the answer, run this exact caller pipeline:
 
-1. Dispatch `oracle` with that answer, the transcript, the current component snapshot, and `references/prompts/oracle-scoring.md`. Every Oracle invocation receives the immutable full interview ID registry and all component ID ownership, including baseline invocations.
-2. Pipe the raw response through `validate.mjs --expected-type=<declaredType>`. On failure, retry exactly once with `retryHint`. If that retry fails, stop processing the Oracle response and execute the Canonical validation fallback below.
+1. Use the mandatory scoring authority envelope above to call `task` with `subagent_type="oracle"`, that answer, the transcript, the current component snapshot, and `references/prompts/oracle-scoring.md`. Every Oracle invocation receives the immutable full interview ID registry and all component ID ownership, including baseline invocations.
+2. Canonically base64url-encode the preserved `state.coverageByComponent[askedTarget.component]` object and pipe the raw response through `validate.mjs --expected-type=<declaredType> "--history-context=$historyContext"`. The history context is the exact pre-answer `{coverage,acceptance_evidence}` snapshot, never Oracle output. On failure, retry exactly once with `retryHint`. If that retry fails, stop processing the Oracle response and execute the Canonical validation fallback below.
 3. Apply FactsLedger effects for confirmed facts, disputes, or supersessions. Ledger entries record evidence; they do not decide semantic coverage.
 4. Run `refineGate.mjs` with the dimension from the preserved `askedTarget`. For a coverage target, do not run refinement and set `refineOutput` to `null`.
 5. Enrich every validated trigger with `component: askedTarget.component` before `scorer.mjs`; no trigger may name or inherit any other component.
@@ -251,13 +284,14 @@ Run this exactly once after Round 0 topology lock, BEFORE Phase 2 Round 1. It cr
 
 ```javascript
 const registryContext = Buffer.from(JSON.stringify({ component: currentBaselineComponent, owners: globalIdOwners }), 'utf8').toString('base64url')
+const historyContext = Buffer.from(JSON.stringify(state.coverageByComponent[currentBaselineComponent]), 'utf8').toString('base64url')
 ```
 
 ```bash
-node "$RUNTIME_DIR/validate.mjs" --expected-type="$declaredType" "--registry-context=$registryContext"
+node "$RUNTIME_DIR/validate.mjs" --expected-type="$declaredType" "--registry-context=$registryContext" "--history-context=$historyContext"
 ```
 
-The baseline caller always supplies exactly one registry flag. Its optional validator form is reserved only for truly single-component direct validator use outside this skill's baseline flow.
+The baseline caller always supplies exactly one registry flag and one history flag. The history flag contains the reducer-created current component snapshot before Oracle scoring. Optional validator forms are reserved only for direct validator use outside this skill's baseline flow.
 
 4. If validation reports an ownership or schema error, reject that Oracle response and retry the same `currentBaselineComponent` before any incorporation or scoring. After the exact retry limit, execute the Canonical validation fallback for that same component; never accept colliding IDs or advance ownership from rejected output.
 5. From a successful validation only, bind every validated baseline trigger to `currentBaselineComponent`, then incorporate every newly allocated O/M/N/X/I/P/E ID into `globalIdOwners` under that component. Same-owner history remains valid. Only then may the next component receive the updated registry context. Allocate only from validated output; never reserve IDs in advance.

@@ -123,6 +123,10 @@ function registryFlag(context) {
   return `--registry-context=${Buffer.from(JSON.stringify(context)).toString('base64url')}`;
 }
 
+function historyFlag(snapshot) {
+  return `--history-context=${Buffer.from(JSON.stringify(snapshot)).toString('base64url')}`;
+}
+
 function componentInput(seed) {
   const input = transitionCompatibleInput();
   input.coverage.outcome.items[0].id = `O${seed}`;
@@ -327,6 +331,61 @@ test('rejects context scores when expected type is greenfield', () => {
   assert.deepEqual(Object.keys(coerced.normalized.scores), ['goal', 'constraints', 'criteria']);
 });
 
+test('rejects an unknown Oracle type even when expected type is authoritative', () => {
+  const input = validInput();
+  input.type = 'semantic_coverage_snapshot';
+  assertInvalid(input, 'if present, type must be "greenfield" or "brownfield"');
+});
+
+test('history context rejects rewritten source rounds and abbreviated item text', () => {
+  const previous = validInput();
+  const snapshot = {
+    coverage: previous.coverage,
+    acceptance_evidence: previous.acceptance_evidence,
+  };
+
+  const abbreviated = clone(previous);
+  abbreviated.coverage.must_haves.items[0].text = 'Validate intent';
+  const abbreviatedOutput = runValidator(abbreviated, [historyFlag(snapshot)]);
+  assert.equal(abbreviatedOutput.ok, false, 'abbreviated historical item text was accepted');
+  assert.ok(
+    abbreviatedOutput.errors.some((error) => error.includes('coverage.must_haves.items[0].text')),
+    JSON.stringify(abbreviatedOutput.errors),
+  );
+
+  const restamped = clone(previous);
+  restamped.coverage.must_haves.items[0].source_round = 19;
+  const restampedOutput = runValidator(restamped, [historyFlag(snapshot)]);
+  assert.equal(restampedOutput.ok, false, 'rewritten historical source_round was accepted');
+  assert.ok(
+    restampedOutput.errors.some((error) => error.includes('coverage.must_haves.items[0].source_round')),
+    JSON.stringify(restampedOutput.errors),
+  );
+});
+
+test('history context permits one-way supersession and evidence append', () => {
+  const previous = validInput();
+  const current = clone(previous);
+  current.coverage.must_haves.source_round = 3;
+  current.coverage.must_haves.items[0].state = 'superseded';
+  current.coverage.must_haves.items.push({
+    id: 'M2', text: 'Validate the complete contract', source: 'user', source_round: 3, state: 'active', supersedes: 'M1',
+  });
+  current.acceptance_evidence.push({
+    id: 'E2', verifies: ['M2'], type: 'test', pass_condition: 'Replacement contract passes', source: 'user', source_round: 3,
+  });
+  const snapshot = {
+    coverage: previous.coverage,
+    acceptance_evidence: previous.acceptance_evidence,
+  };
+
+  const output = runValidator(current, [historyFlag(snapshot)]);
+  assert.equal(output.ok, true, JSON.stringify(output.errors));
+  assert.equal(output.normalized.coverage.must_haves.items[0].state, 'superseded');
+  assert.deepEqual(output.normalized.coverage.must_haves.items[1], current.coverage.must_haves.items[1]);
+  assert.deepEqual(output.normalized.acceptance_evidence[1], current.acceptance_evidence[1]);
+});
+
 test('caller enrichment carries a fired validator trigger through scorer and transition', () => {
   const { askedTarget, enrichedTriggers, scorerOutput, transition, validation } = runFiredTriggerPipeline();
   assert.deepEqual(validation.normalized.triggers, [{ dim: 'goal', type: 'C' }]);
@@ -382,6 +441,25 @@ test('registry context rejects malformed encoding shape IDs owners and duplicate
   const duplicateFlag = registryFlag({ component: 'API', owners: {} });
   const duplicate = runValidator(validInput(), [duplicateFlag, duplicateFlag]);
   assert.deepEqual(duplicate.errors, ['--registry-context may be provided at most once']);
+});
+
+test('history context rejects malformed encoding shape and duplicates', () => {
+  const malformedShape = Buffer.from(JSON.stringify({ coverage: [], acceptance_evidence: [] })).toString('base64url');
+  const extraField = historyFlag({ coverage: validCoverage(), acceptance_evidence: validInput().acceptance_evidence, extra: true });
+  const cases = [
+    ['--history-context', '--history-context requires a base64url JSON value'],
+    ['--history-context=%%%', 'history context must be canonical non-empty base64url JSON'],
+    [`--history-context=${malformedShape}`, 'history context coverage must be an object'],
+    [extraField, 'history context.extra is not allowed'],
+  ];
+  for (const [flag, fragment] of cases) {
+    const output = runValidator(validInput(), [flag]);
+    assert.equal(output.ok, false, `${flag} should fail`);
+    assert.ok(output.errors.some((error) => error.includes(fragment)), JSON.stringify(output.errors));
+  }
+  const duplicateFlag = historyFlag({ coverage: validCoverage(), acceptance_evidence: validInput().acceptance_evidence });
+  const duplicate = runValidator(validInput(), [duplicateFlag, duplicateFlag]);
+  assert.deepEqual(duplicate.errors, ['--history-context may be provided at most once']);
 });
 
 test('serial baseline registry binds component triggers and reaches reducer', () => {

@@ -16,6 +16,8 @@ const argv = process.argv.slice(2);
 let expectedType = null;
 let registryContextEncoded = null;
 let registryContext = null;
+let historyContextEncoded = null;
+let historyContext = null;
 const cliErrors = [];
 for (const a of argv) {
   const m = /^--expected-type=(greenfield|brownfield)$/.exec(a);
@@ -27,6 +29,15 @@ for (const a of argv) {
       cliErrors.push('--registry-context may be provided at most once');
     } else {
       registryContextEncoded = a.slice('--registry-context='.length);
+    }
+  }
+  if (a === '--history-context') {
+    cliErrors.push('--history-context requires a base64url JSON value');
+  } else if (a.startsWith('--history-context=')) {
+    if (historyContextEncoded !== null) {
+      cliErrors.push('--history-context may be provided at most once');
+    } else {
+      historyContextEncoded = a.slice('--history-context='.length);
     }
   }
 }
@@ -53,10 +64,11 @@ const ITEM_KEYS = new Set(['id', 'text', 'source', 'source_round', 'state', 'sup
 const EVIDENCE_KEYS = new Set(['id', 'verifies', 'type', 'pass_condition', 'source', 'source_round']);
 const EVIDENCE_TYPES = new Set(['test', 'inspection', 'observation', 'analysis']);
 const REGISTRY_CONTEXT_KEYS = new Set(['component', 'owners']);
+const HISTORY_CONTEXT_KEYS = new Set(['coverage', 'acceptance_evidence']);
 const REGISTRY_ID_PATTERN = /^[OMNXIPE][1-9][0-9]*$/;
 const MAX_VALIDATOR_INPUT_BYTES = 1024 * 1024;
 const MAX_REGISTRY_CONTEXT_BYTES = 256 * 1024;
-const MAX_REGISTRY_CONTEXT_ENCODED_CHARS = Math.ceil(MAX_REGISTRY_CONTEXT_BYTES * 4 / 3);
+const MAX_HISTORY_CONTEXT_BYTES = 256 * 1024;
 const MAX_COMPONENT_NAME_LENGTH = 120;
 const MAX_VALIDATION_ERRORS = 64;
 
@@ -110,43 +122,50 @@ function isNonNegativeInteger(value) {
   return Number.isInteger(value) && value >= 0;
 }
 
-function parseRegistryContext(encoded, errors) {
-  const errorCount = errors.length;
-  if (encoded.length > MAX_REGISTRY_CONTEXT_ENCODED_CHARS) {
-    errors.push(`registry context exceeds ${MAX_REGISTRY_CONTEXT_BYTES} decoded bytes`);
+function decodeContext(encoded, label, maxBytes, errors) {
+  const maxEncodedChars = Math.ceil(maxBytes * 4 / 3);
+  if (encoded.length > maxEncodedChars) {
+    errors.push(`${label} exceeds ${maxBytes} decoded bytes`);
     return null;
   }
   if (!/^[A-Za-z0-9_-]+$/.test(encoded)) {
-    errors.push('registry context must be canonical non-empty base64url JSON');
+    errors.push(`${label} must be canonical non-empty base64url JSON`);
     return null;
   }
   const bytes = Buffer.from(encoded, 'base64url');
-  if (bytes.length > MAX_REGISTRY_CONTEXT_BYTES) {
-    errors.push(`registry context exceeds ${MAX_REGISTRY_CONTEXT_BYTES} decoded bytes`);
+  if (bytes.length > maxBytes) {
+    errors.push(`${label} exceeds ${maxBytes} decoded bytes`);
     return null;
   }
   if (bytes.toString('base64url') !== encoded) {
-    errors.push('registry context must be canonical non-empty base64url JSON');
+    errors.push(`${label} must be canonical non-empty base64url JSON`);
     return null;
   }
   let decoded;
   try {
     decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
   } catch {
-    errors.push('registry context must decode to valid UTF-8 JSON');
+    errors.push(`${label} must decode to valid UTF-8 JSON`);
     return null;
   }
   let parsed;
   try {
     parsed = JSON.parse(decoded);
   } catch {
-    errors.push('registry context must decode to valid JSON');
+    errors.push(`${label} must decode to valid JSON`);
     return null;
   }
   if (!isObject(parsed)) {
-    errors.push('registry context must be an object');
+    errors.push(`${label} must be an object`);
     return null;
   }
+  return parsed;
+}
+
+function parseRegistryContext(encoded, errors) {
+  const errorCount = errors.length;
+  const parsed = decodeContext(encoded, 'registry context', MAX_REGISTRY_CONTEXT_BYTES, errors);
+  if (parsed === null) return null;
   addUnknownKeyErrors(parsed, REGISTRY_CONTEXT_KEYS, 'registry context', errors);
   if (!Object.hasOwn(parsed, 'component')) errors.push('registry context.component is required');
   if (!Object.hasOwn(parsed, 'owners')) errors.push('registry context.owners is required');
@@ -168,6 +187,23 @@ function parseRegistryContext(encoded, errors) {
         errors.push(`registry context.owners.${id} must be at most ${MAX_COMPONENT_NAME_LENGTH} characters`);
       }
     }
+  }
+  return errors.length === errorCount ? parsed : null;
+}
+
+function parseHistoryContext(encoded, errors) {
+  const errorCount = errors.length;
+  const parsed = decodeContext(encoded, 'history context', MAX_HISTORY_CONTEXT_BYTES, errors);
+  if (parsed === null) return null;
+  addUnknownKeyErrors(parsed, HISTORY_CONTEXT_KEYS, 'history context', errors);
+  if (!Object.hasOwn(parsed, 'coverage')) errors.push('history context.coverage is required');
+  if (!Object.hasOwn(parsed, 'acceptance_evidence')) {
+    errors.push('history context.acceptance_evidence is required');
+  }
+  if (Object.hasOwn(parsed, 'coverage') && Object.hasOwn(parsed, 'acceptance_evidence')) {
+    const nestedErrors = [];
+    validateCoverage(parsed.coverage, parsed.acceptance_evidence, nestedErrors);
+    errors.push(...nestedErrors.map((error) => `history context ${error}`));
   }
   return errors.length === errorCount ? parsed : null;
 }
@@ -302,6 +338,39 @@ function validateCoverage(coverage, acceptanceEvidence, errors) {
   validateAcceptanceEvidence(acceptanceEvidence, allItems, errors);
 }
 
+function validateHistoricalPrefix(previous, coverage, acceptanceEvidence, errors) {
+  for (const categoryName of COVERAGE_KEYS) {
+    const previousItems = previous.coverage[categoryName].items;
+    const currentItems = coverage[categoryName].items;
+    if (currentItems.length < previousItems.length) {
+      errors.push(`coverage.${categoryName}.items must preserve history as an append-only prefix`);
+      continue;
+    }
+    for (const [index, previousItem] of previousItems.entries()) {
+      const currentItem = currentItems[index];
+      for (const key of ['id', 'text', 'source', 'source_round', 'supersedes']) {
+        if (currentItem[key] !== previousItem[key]) {
+          errors.push(`coverage.${categoryName}.items[${index}].${key} must preserve history byte-for-byte`);
+        }
+      }
+      const statePreserved = currentItem.state === previousItem.state
+        || (previousItem.state === 'active' && currentItem.state === 'superseded');
+      if (!statePreserved) {
+        errors.push(`coverage.${categoryName}.items[${index}].state may only change from active to superseded`);
+      }
+    }
+  }
+  if (acceptanceEvidence.length < previous.acceptance_evidence.length) {
+    errors.push('acceptance_evidence must preserve history as an append-only prefix');
+    return;
+  }
+  for (const [index, previousEntry] of previous.acceptance_evidence.entries()) {
+    if (JSON.stringify(acceptanceEvidence[index]) !== JSON.stringify(previousEntry)) {
+      errors.push(`acceptance_evidence[${index}] must preserve history byte-for-byte`);
+    }
+  }
+}
+
 function validateAcceptanceEvidence(entries, allItems, errors) {
   if (!Array.isArray(entries)) {
     errors.push('acceptance_evidence must be an array');
@@ -407,7 +476,9 @@ function writeFailure(errors) {
     + '"Return STRICT JSON only. Required fields: scores{goal,constraints,criteria[,context]}, '
     + 'weakest_dimension in {goal,constraints,criteria,context}, '
     + 'triggers: array of {dim, type:A|B|C|D}, coverage, and acceptance_evidence. '
-    + 'All scores in [0,1]. User provenance must be explicit. No prose, code fences, or unknown keys."';
+    + 'All scores in [0,1]. User provenance must be explicit. Preserve prior id, text, source, source_round, '
+    + 'and supersedes fields byte-for-byte; state may only change from active to superseded. Preserve prior evidence '
+    + 'byte-for-byte and only append new records. No prose, code fences, or unknown keys."';
   process.stdout.write(JSON.stringify({
     ok: false,
     errors: boundedErrors,
@@ -418,6 +489,9 @@ function writeFailure(errors) {
 function coerceType(value) {
   // CLI --expected-type is authoritative when provided.
   if (expectedType) {
+    if (value !== undefined && value !== null && value !== 'greenfield' && value !== 'brownfield') {
+      return null;
+    }
     if (value !== undefined && value !== null && value !== expectedType) {
       // Oracle disagreed with declared type. Trust the declared type (Phase 1 detection).
       return expectedType;
@@ -453,6 +527,9 @@ async function main() {
   const errors = [...cliErrors];
   if (registryContextEncoded !== null) {
     registryContext = parseRegistryContext(registryContextEncoded, errors);
+  }
+  if (historyContextEncoded !== null) {
+    historyContext = parseHistoryContext(historyContextEncoded, errors);
   }
   addUnknownKeyErrors(parsed, TOP_LEVEL_KEYS, 'top-level', errors);
 
@@ -511,7 +588,11 @@ async function main() {
     });
   }
 
+  const coverageErrorCount = errors.length;
   validateCoverage(parsed.coverage, parsed.acceptance_evidence, errors);
+  if (historyContext !== null && errors.length === coverageErrorCount) {
+    validateHistoricalPrefix(historyContext, parsed.coverage, parsed.acceptance_evidence, errors);
+  }
 
   if (errors.length) fail(errors);
 
