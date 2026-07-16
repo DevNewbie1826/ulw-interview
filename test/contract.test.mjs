@@ -353,3 +353,28 @@ test('DI-CONTRACT-NEW-010 write_spec enforces closurePassed and restatementConfi
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+
+test('DI-CONTRACT-NEW-011 submit_answer rejects a double submit for the same round', () => {
+  let result = confirmTopology(start().state);
+  result = event(result.state, 'open_round', {
+    round: 1,
+    questionId: 'q1',
+    question: 'What outcome must ingestion produce?',
+    target: { componentId: 'ingestion', dimension: 'goal' },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  result = event(result.output.state, 'submit_answer', {
+    round: 1,
+    answer: { kind: 'user', text: 'First answer', source: 'direct' },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.output.effects, [{ type: 'score_answer', round: 1 }]);
+
+  const replay = event(result.output.state, 'submit_answer', {
+    round: 1,
+    answer: { kind: 'user', text: 'Second answer overwrites first', source: 'direct' },
+  });
+  assert.notEqual(replay.status, 0);
+  assert.match(replay.stderr, /already recorded/i);
+});

@@ -222,3 +222,10 @@ test('DI-UNIT-NEW-007 safe round keys use the gajae ::r and ::q contract', () =>
   assert.equal(result.state.pendingRound.roundKey, 'round-key-contract::r:1::q:q1');
   assert.equal(result.state.pendingRound.forcedUser, false);
 });
+
+
+test('DI-UNIT-NEW-008 clamp mirrors gajae clampReportedAmbiguity without rounding', () => {
+  assert.deepEqual(clamp(0.333, 0), { effective: 0.333, clamped: false });
+  assert.deepEqual(clamp(0.333, 0.5), { effective: 0.5, clamped: true });
+  assert.deepEqual(clamp(0.4567, 0.2), { effective: 0.4567, clamped: false });
+});

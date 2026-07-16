@@ -181,6 +181,7 @@ export function submitAnswer(state, input) {
   if (input.replacesRound !== undefined) return submitReplacement(state, input, answer);
   if (!state.pendingRound || state.pendingPanel || state.pendingRefinement) throw new TransitionError('submit_answer requires one open round');
   if (input.round !== state.pendingRound.round) throw new TransitionError('submit_answer round must match pendingRound');
+  if (state.pendingRound.answer !== undefined) throw new TransitionError('submit_answer already recorded for this round');
   if (state.pendingRound.forcedUser && answer.kind === 'agent') throw new TransitionError('agent answers are rejected on forced-user rounds');
   const streak = applyStreak(state, input.round, answer);
   const nextRound = answeredPendingRound(state, answer);

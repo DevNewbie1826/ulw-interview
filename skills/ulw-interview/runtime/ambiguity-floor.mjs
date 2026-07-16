@@ -18,8 +18,8 @@ function bound01(value) {
 
 export function clamp(reported, floor = 0) {
   const bounded = bound01(reported);
-  if (floor > bounded) return { effective: round2(Math.min(1, floor)), clamped: true };
-  return { effective: round2(bounded), clamped: false };
+  if (floor > bounded) return { effective: Math.min(1, floor), clamped: true };
+  return { effective: bounded, clamped: false };
 }
 
 function array(value) {

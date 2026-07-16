@@ -5,9 +5,9 @@
 - Rounds: {rounds}
 - Final Ambiguity: {final_ambiguity_percent}% ({plain_ambiguity_line})
 - Type: {greenfield|brownfield}
-- Threshold: {threshold_percent}%
-- Threshold Source: {threshold_source}
-- Status: {PASSED|BELOW_THRESHOLD_EARLY_EXIT}
+- Threshold: {threshold_percent}% ({plain_threshold_line})
+- Threshold Source: {threshold_source} ({plain_threshold_source_line})
+- Status: {PASSED|BELOW_THRESHOLD_EARLY_EXIT} ({plain_status_line})
 - Auto-Researched Rounds: {auto_researched_rounds}
 - Auto-Answered Rounds: {auto_answered_rounds}
 - Refined Rounds: {refined_rounds}

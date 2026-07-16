@@ -154,7 +154,7 @@ Rules:
 6. Trigger status `disputed` or `unresolved` requires non-empty rationale and is exempt from active invariants.
 7. Aggregation uses the minimum score across active components for each required dimension, then `reported = round2(1 - sum(weight[d] * overall[d]))`.
 8. Floor: `floor = round2(min(1, 0.10*unresolvedDisputedFacts + 0.05*unscoredActiveComponents + 0.05*min(1, autoAnswered/max(scoredRounds,1))))` after committing this score.
-9. Effective ambiguity is `round2(max(reported, floor))`. Store `reportedAmbiguity`, full `ambiguityFloor`, and `ambiguity`.
+9. Effective ambiguity is `max(reported, floor)` via a gajae-verbatim clamp (no rounding inside the clamp; both operands are already round2 in-flow, so effective stays 2-decimal in practice). Store `reportedAmbiguity`, full `ambiguityFloor`, and `ambiguity`.
 10. If clamped, the scored round stores both `reported_ambiguity` and `ambiguity_floor`.
 11. Component clarity persists to topology components.
 12. Band: `ready <= threshold`; `refined <= 0.30`; `progress <= 0.60`; otherwise `initial`. `bandChanged` detects either direction.
