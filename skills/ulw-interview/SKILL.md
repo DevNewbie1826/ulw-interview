@@ -36,11 +36,11 @@ Send one JSON object on stdin and read one JSON object on stdout: `{ "state": pr
 2. **`ask_topology`:** Propose 1-6 top-level components (plain wording: `big chunks`, rendered in the user's language), ask one confirmation question, then send `confirm_topology` with host-supplied `confirmedAt`.
 3. **Round loop:** When the runtime returns `open_round` with a `target`, write ONE plain-language reason why that target matters and ONE question with 2-4 options plus a free-text path. Send the `open_round` event with that question. After the user answers, send `submit_answer`.
    - If the runtime returns `refine_answer`, skip refinement for short yes/no answers, pre-built option picks, auto-confirmed codebase facts, or already structured agent answers; otherwise structure reasoning-heavy free text, ask one confirmation with Send as-is / Add a constraint / Mark out of scope / Add context / Rewrite, then send `refine_answer`.
-   - If it returns `run_lateral_panel`, dispatch `lateral-review-panel.md`: `analyst` first via `metis`, `critic` second via `momus`, parallel if possible; then send `panel_completed` with findings in analyst→critic order.
+   - If it returns `run_lateral_panel`, dispatch `lateral-review-panel.md` via `task(subagent_type="metis")` for `analyst` first and `task(subagent_type="momus")` for `critic` second, parallel if possible; then send `panel_completed` with findings in analyst→critic order.
    - If it returns `score_answer`, dispatch `scoring.md` to a scoring pass, then send `record_score` with the scorer output UNMODIFIED. The scorer owns semantic judgment; the runtime owns math and routing.
 4. **`report_progress`:** Render the score table and a plain-language explanation every round. Every number gets one plain line explaining what it means per `plain-language.md`.
 5. **Continue only from returned effects:** The next step is whatever the runtime returns: another `open_round`, a `run_lateral_panel` milestone, or `request_closure_audit`.
-6. **Closure:** On `request_closure_audit`, do an independent audit. Recommended dispatch: `momus`, because its OKAY/ITERATE/REJECT lens fits closure. Short prompt: `Review the transcript, scores, facts, topology, and threshold. Return OKAY only if every active chunk is clear enough, no disputed fact remains, and the spec can be safely written; return ITERATE with the single next gap; return REJECT only for a contract violation.` Send `audit_closure {passed,...}`. The runtime mechanically rejects passing above threshold unless hard-cap or early-exit applies, and rejects unresolved disputed facts.
+6. **Closure:** On `request_closure_audit`, do an independent audit. Recommended dispatch: `task(subagent_type="momus")`, because its OKAY/ITERATE/REJECT lens fits closure. Short prompt: `Review the transcript, scores, facts, topology, and threshold. Return OKAY only if every active chunk is clear enough, no disputed fact remains, and the spec can be safely written; return ITERATE with the single next gap; return REJECT only for a contract violation.` Send `audit_closure {passed,...}`. The runtime mechanically rejects passing above threshold unless hard-cap or early-exit applies, and rejects unresolved disputed facts.
 7. **Restate:** On `request_restate`, show the whole agreement plainly and ask one confirmation question with Yes, crystallize / Adjust wording / Missing scope. If the user picks Adjust wording or Missing scope, collect the exact correction with one follow-up, then send `confirm_restate`. Corrections become normal rounds; after two failed loops the runtime returns to the interview loop.
 8. **Write spec:** On `write_spec`, load `spec-template.md` and render every heading. Send `write_spec` with an explicit user-approved directory and safe slug. The CLI persists atomically and returns `path` plus `sha256`; show both.
 9. **After write:** Present an approval-gated next step, such as refining the spec into a plan. NEVER auto-start implementation.
@@ -68,8 +68,8 @@ Send one JSON object on stdin and read one JSON object on stdout: `{ "state": pr
 |---|---|
 | `plain-language.md` | At `initialize`; keep loaded for all user-facing text. |
 | `scoring.md` | Every `score_answer`. |
-| `auto-research-greenfield.md` | Greenfield factual question where research can substitute for a user decision; dispatch `metis`. |
-| `auto-answer-uncertain.md` | User opts out or asks the agent to decide; dispatch `metis`. |
+| `auto-research-greenfield.md` | Greenfield factual question where research can substitute for a user decision; dispatch via `task(subagent_type="metis")`. |
+| `auto-answer-uncertain.md` | User opts out or asks the agent to decide; dispatch via `task(subagent_type="metis")`. |
 | `lateral-review-panel.md` | Every `run_lateral_panel` effect. |
 | `spec-template.md` | After closure and restatement pass, when rendering the spec. |
 
@@ -82,7 +82,7 @@ Fragments are private: no frontmatter, never public commands, never loaded at st
 | `analyst` → `metis` | Panel researcher + contrarian lens; also use `metis` for auto-research and auto-answer. |
 | `critic` → `momus` | Panel simplifier + architect lens; also use `momus` for closure audit. |
 
-On harnesses without these agents, load the fragment file as the full prompt for a read-only forked context.
+Attempt the dispatches above first. On harnesses that do not provide these agents (non-OpenCode hosts, or when `task` rejects the `subagent_type`), load the fragment file as the full prompt for a read-only forked context. Do not substitute another agent while `metis`/`momus` are available.
 
 ## Language mandate
 

@@ -97,3 +97,11 @@ test('DI-PROMPT-NEW-007 SKILL.md routes user-facing questions through the host q
   assert.match(skill, /question tool/i);
   assert.match(skill, /plain text only when the host has no question tool/i);
 });
+
+test('DI-PROMPT-NEW-008 SKILL.md spells out literal metis/momus dispatch and forbids substitution', () => {
+  const skill = readSkillFile('SKILL.md');
+
+  assert.match(skill, /task\(subagent_type="metis"\)/);
+  assert.match(skill, /task\(subagent_type="momus"\)/);
+  assert.match(skill, /do not substitute another agent/i);
+});
