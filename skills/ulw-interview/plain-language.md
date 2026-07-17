@@ -2,7 +2,7 @@
 
 Purpose: load this guide whenever the interviewing agent writes user-facing text: announcements, questions, answer options, progress reports, and final spec prose. The user sees plain language; the internal protocol may keep technical terms for scoring, state, and dispatch.
 
-Default to the user's own language. If the user writes in Korean, answer in Korean; if they write in Japanese, answer in Japanese — always match the user's language unless they ask otherwise. Keep technical names inside internal notes only; if a technical term must appear for the user, explain it immediately in everyday words.
+Default to the user's own language: always match the language the user writes in, unless they ask otherwise. Keep technical names inside internal notes only; if a technical term must appear for the user, explain it immediately in everyday words.
 
 ## Glossary
 
