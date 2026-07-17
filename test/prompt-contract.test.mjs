@@ -65,11 +65,19 @@ test('DI-PROMPT-NEW-003 spec-template.md contains every gajae spec heading', () 
   }
 });
 
-test('DI-KEEP-PROMPT-002 plain-language.md exists with Korean glossary entries', () => {
+test('DI-PROMPT-NEW-006 plain-language.md is language-neutral with plain-English glossary renderings', () => {
   const plainLanguage = readSkillFile('plain-language.md');
 
-  for (const entry of ['애매함 점수', '큰 덩어리', '핵심 개념']) {
-    assert.match(plainLanguage, new RegExp(entry));
+  for (const entry of ['ambiguity', 'threshold', 'topology', 'component', 'ontology']) {
+    assert.match(plainLanguage, new RegExp(entry, 'i'));
+  }
+  for (const entry of ['fog score', 'big chunks', 'key names']) {
+    assert.match(plainLanguage, new RegExp(entry, 'i'));
+  }
+
+  for (const file of readdirSync(skillDirectory, { recursive: true })) {
+    if (!file.endsWith('.md')) continue;
+    assert.doesNotMatch(readSkillFile(file), /[\uac00-\ud7a3\u3040-\u30ff\u4e00-\u9fff]/, `${file} must stay language-neutral`);
   }
 });
 

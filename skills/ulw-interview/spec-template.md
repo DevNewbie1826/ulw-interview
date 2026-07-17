@@ -62,7 +62,7 @@ Deferred chunks:
 {brownfield_paths_symbols_patterns_or_greenfield_context}
 
 ## Ontology
-Renderer note: substitute {ontology_heading} with the glossary term for the user's language (Korean: 핵심 개념; English: key names).
+Renderer note: substitute {ontology_heading} with the glossary term rendered in the user's language (plain English: key names).
 {ontology_heading}
 {entity_name_type_fields_relationships}
 
