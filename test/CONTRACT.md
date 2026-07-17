@@ -230,6 +230,7 @@ Input: `{}`. Any phase before `written`. Clears pending work, phase `stopped`, e
 - `SKILL.md` names `metis` and `momus` as dispatch targets for the analyst/critic panel and contains no alternate bypass path wording.
 - `SKILL.md` routes every user-facing question through the host's question tool when one is available, with plain text only as the no-tool fallback.
 - `SKILL.md` spells out the literal panel dispatch (`task(subagent_type="metis")` / `task(subagent_type="momus")`) and forbids substituting another agent while metis/momus are available.
+- `SKILL.md` dispatches the scoring pass via `task(subagent_type="metis")`.
 
 ## Open decisions
 

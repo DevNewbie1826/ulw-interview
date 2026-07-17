@@ -105,3 +105,12 @@ test('DI-PROMPT-NEW-008 SKILL.md spells out literal metis/momus dispatch and for
   assert.match(skill, /task\(subagent_type="momus"\)/);
   assert.match(skill, /do not substitute another agent/i);
 });
+
+test('DI-PROMPT-NEW-009 SKILL.md dispatches the scoring pass via metis', () => {
+  const skill = readSkillFile('SKILL.md');
+
+  assert.match(
+    skill,
+    /If it returns `score_answer`, dispatch `scoring\.md` via `task\(subagent_type="metis"\)`, then send `record_score`/,
+  );
+});
