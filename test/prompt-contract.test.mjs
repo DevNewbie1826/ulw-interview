@@ -90,3 +90,10 @@ test('DI-PROMPT-NEW-005 SKILL.md names metis/momus dispatch targets and contains
   assert.doesNotMatch(skill, /bypass(?:es|ing)?\s+(?:closure|restate|topology|ask|the gate)/i);
   assert.doesNotMatch(skill, /proceed(?:ing)?\s+despite\s+high\s+ambiguity/i);
 });
+
+test('DI-PROMPT-NEW-007 SKILL.md routes user-facing questions through the host question tool', () => {
+  const skill = readSkillFile('SKILL.md');
+
+  assert.match(skill, /question tool/i);
+  assert.match(skill, /plain text only when the host has no question tool/i);
+});

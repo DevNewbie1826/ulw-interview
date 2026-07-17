@@ -228,6 +228,7 @@ Input: `{}`. Any phase before `written`. Clears pending work, phase `stopped`, e
 - `spec-template.md` contains these headings: Metadata, Clarity Breakdown, Topology, Established Facts, Trigger Metadata, Lateral Review Panel, Goal, Constraints, Non-Goals, Acceptance Criteria, Deferrals, Assumptions Exposed & Resolved, Technical Context, Ontology, Ontology Convergence, Interview Transcript.
 - `plain-language.md` exists with plain-English glossary renderings (`fog score`, `big chunks`, `key names`) for the internal terms, and no Markdown file under `skills/ulw-interview/` contains language-pinned script text; all user-facing wording renders in the user's own language.
 - `SKILL.md` names `metis` and `momus` as dispatch targets for the analyst/critic panel and contains no alternate bypass path wording.
+- `SKILL.md` routes every user-facing question through the host's question tool when one is available, with plain text only as the no-tool fallback.
 
 ## Open decisions
 

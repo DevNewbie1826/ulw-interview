@@ -12,6 +12,7 @@ ULW Interview turns a vague idea into a testable spec by asking one focused ques
 ## Non-negotiable rules
 
 - Ask one question per round.
+- Ask every user-facing question through the host's question tool when one is available (OpenCode: the `question` tool); pass the round's options as the tool's choices and keep the escape path as one of them. Render plain text only when the host has no question tool.
 - The runtime chooses every target; use returned `target` values verbatim.
 - Show the threshold before any welcome or question.
 - Show scores after every scored round.
